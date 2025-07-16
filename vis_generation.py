@@ -72,7 +72,7 @@ if __name__ == "__main__":
     filenames = ['data/demo/source/gHO_sBM_cAll_d20_mHO1_ch05.npy']
 
     vis = o3d.visualization.Visualizer()
-    vis.create_window(width=1025, height=958, visible=False)
+    vis.create_window(width=1025, height=958, visible=True)
     
     for filename in filenames:
         motion_name = filename.split('/')[-1].replace('.npy', '')
@@ -170,10 +170,14 @@ if __name__ == "__main__":
                         
                         vis.add_geometry(drawPlate(coords[i], pcd_normals[i], color, 0.03))
                 
+                    # force a draw pass before capture
+                    vis.poll_events()
+                    vis.update_renderer()
                     ctr = vis.get_view_control()
-                    parameters = o3d.io.read_pinhole_camera_parameters('data/source/source.json')
+                    parameters = o3d.io.read_pinhole_camera_parameters('data/demo/source/source.json')
+                    # print('Current working directory:', os.getcwd())
                     ctr.convert_from_pinhole_camera_parameters(parameters)
-                    img = vis.capture_screen_float_buffer(True)
+                    img = vis.capture_screen_float_buffer(False)
                     img = np.asarray(img) * 255.
                     vis.clear_geometries()
 
@@ -190,3 +194,5 @@ if __name__ == "__main__":
                     imgs.append(final_img)
 
                 imageio.mimsave(os.path.join(save_dir, 'gen_result_%d.gif' % sample_id), imgs, duration=0.1)
+                print('Sample %d generation finished, results saved to %s' % (sample_id, save_dir))
+    print('Generation finished, results saved to %s' % save_dir)

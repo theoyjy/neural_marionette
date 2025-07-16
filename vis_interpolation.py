@@ -75,18 +75,18 @@ if __name__ == "__main__":
     
     for filename in filenames:
         motion_name = filename.split('/')[-1].replace('.npy', '')
-        target_voxel = load_voxel(filename, opt, 0)
+        target_voxel = load_voxel(filename, opt, 0) #[20, 1, 64, 64, 64]
         
         with torch.no_grad():
-            T, _, *X = target_voxel.shape
-            K = opt.nkeypoints
+            T, _, *X = target_voxel.shape # T=30, X=[64, 64, 64]
+            K = opt.nkeypoints  # k = 24
             detector_log = network.kypt_detector(target_voxel[None])
-            keypoints = detector_log['keypoints']
-            affinity = detector_log['affinity']
+            keypoints = detector_log['keypoints'] # 1, 20, 24, 4
+            affinity = detector_log['affinity'] # 2, 24, 24, 1
             _ = network.dyna_module.encode(keypoints, affinity)
-            A = network.dyna_module.A
-            priority = network.dyna_module.priority
-            parents = network.dyna_module.parents
+            A = network.dyna_module.A # 24, 24
+            priority = network.dyna_module.priority # len 2: 24
+            parents = network.dyna_module.parents # 24
 
             prev_state = network.dyna_module.init_kypt_rnn_state.expand(sample_num, -1)
             offset = network.dyna_module.get_offset(keypoints).expand(sample_num, -1, -1, -1)

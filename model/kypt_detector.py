@@ -329,6 +329,10 @@ class VoxToKyptNet(nn.Module):
         gaussians = []
         for t in range(T):
             obs = seq[:, t]
+            # ensure 5D for Conv3d: add depth dim if missing
+            if obs.dim() == 4:
+                # assume shape [B, C, H, W] -> [B, C, 1, H, W]
+                obs = obs.unsqueeze(2)
             obs = add_coord_channels(obs)
             feature = self.extract_features(obs)
             if t == 0:
