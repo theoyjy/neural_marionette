@@ -27,17 +27,17 @@
             "name": "Python: NM Blending",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/NM_Interpolation.py",
+            "program": "${workspaceFolder}/NM_AnyMate_Interpolation.py",
             "console": "integratedTerminal",
             "args": [
                 "--mesh0",
                 "D:\\Code\\VVEditor\\Rafa_Approves_hd_4k\\Frame_00001_textured_hd_t_s_c.obj",
                 "--meshT",
                 "D:\\Code\\VVEditor\\Rafa_Approves_hd_4k\\Frame_00100_textured_hd_t_s_c.obj",
-                "--n",
+                "--frames",
                 "10",
                 "--output_dir",
-                "output/blend/nm_1_To_100_in_10"
+                "output/blend/any_nm_1_To_100_in_10"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}",
