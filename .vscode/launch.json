@@ -5,10 +5,29 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: Blending",
+            "name": "Python: NMSkel_DemSkin",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/ConsistentSkeletonPredictor.py",
+            "program": "${workspaceFolder}/NMSkel_DemSkin.py",
+            "console": "integratedTerminal",
+            "args": [
+                "D:\\Code\\VVEditor\\Rafa_Approves_hd_4k\\Frame_00001_textured_hd_t_s_c.obj",
+                "D:\\Code\\VVEditor\\Rafa_Approves_hd_4k\\Frame_00100_textured_hd_t_s_c.obj",
+                "10",
+                "--output_dir",
+                "output/blend/dem_1_To_100_in_10"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "VIRTUAL_ENV": "${workspaceFolder}/neural_env"
+            },
+            "python": "${workspaceFolder}/neural_env/Scripts/python.exe",
+        },
+        {
+            "name": "Python: NMSkel_Inter_LBS",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/NMSkel_Inter_LBS.py",
             "console": "integratedTerminal",
             "args": [
                 "D:\\Code\\VVEditor\\Rafa_Approves_hd_4k\\Frame_00001_textured_hd_t_s_c.obj",
