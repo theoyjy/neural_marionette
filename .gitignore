@@ -3,3 +3,5 @@ output/
 /neural_env
 /utils
 /modules
+*.obj
+*.pkl

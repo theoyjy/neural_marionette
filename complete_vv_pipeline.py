@@ -6,11 +6,15 @@
 功能：
 1. 加载文件夹中的.obj文件，每帧通过voxel化后交给NeuralMarionette预测skeleton
 2. 自动检测最佳rest pose，基于skeleton进行网格拓扑统一
-3. 使用修复后的DemBones进行蒙皮权重预测
+3. 使用 C++ CLI 版本的 DemBones 进行蒙皮权重预测
 4. 生成任意两帧之间的指定数量插值
 
 使用方法：
 python complete_vv_pipeline.py <folder_path> --start_frame 0 --end_frame 10 --num_interp 5
+
+前置要求：
+- 需要 DemBones C++ 可执行文件在 PATH 中或当前目录
+- 可从 https://github.com/electronicarts/dem-bones 下载源码编译
 """
 
 import argparse
@@ -32,11 +36,9 @@ from model.neural_marionette import NeuralMarionette
 from utils.dataset_utils import voxelize
 import subprocess
 import tempfile
-import struct
 
 # 导入GenerateSkel的函数
 from GenerateSkel import (
-    load_voxel_from_mesh, 
     process_single_mesh,
     sanitize_parents,
     draw_skeleton,
@@ -62,6 +64,44 @@ class CompleteVVPipeline:
         self.skinning_weights = None
         self.bone_transforms = None
         self.parents = None
+
+
+    def points_to_voxel(self, pts_norm, grid_size):
+        occ = voxelize(pts_norm, (grid_size, grid_size, grid_size), is_binarized=True)  # (1,D,H,W) bool
+        occ = torch.from_numpy(occ).float() # (1, 64, 64, 64) float32
+        return occ
+
+    def read_mesh_verts(self, path: str):
+        mesh = o3d.io.read_triangle_mesh(path)
+        if not mesh.has_vertices():
+            raise ValueError(f"Failed to load mesh from {path}")
+        return np.asarray(mesh.vertices, np.float32)
+
+    def load_voxel_from_mesh(self, file, opt, is_bind=False,
+                         scale=1.0, x_trans=0.0, z_trans=0.0):
+        """
+        Read mesh, normalize and voxelize for network input.
+        Returns: vox (N=1, C=4, D, H, W), raw points, mesh, bmin, blen
+        """
+        mesh = o3d.io.read_triangle_mesh(file, True)
+        points = np.asarray(mesh.vertices)
+
+        if is_bind:
+            points = np.stack([points[:, 0], -points[:, 2], points[:, 1]], axis=-1)
+
+        # ---------- 归一化 ----------
+        bmin = points.min(axis=0)
+        bmax = points.max(axis=0)
+        blen = (bmax - bmin).max()
+
+        pts_norm = ((points - bmin) * scale / (blen + 1e-5)) * 2 - 1 \
+                + np.array([x_trans, 0, z_trans])
+        
+        # ---------- 体素化 ----------
+        vox = self.points_to_voxel(pts_norm, self.opt.grid_size, is_binarized=True)
+
+        return vox, points, mesh, bmin, blen
+
         
     def _load_neural_marionette(self):
         """加载预训练的NeuralMarionette网络"""
@@ -82,41 +122,170 @@ class CompleteVVPipeline:
     
     def step1_process_frames(self, start_frame=0, end_frame=None):
         """
-        步骤1：处理指定范围的帧，提取skeleton数据
+        步骤1：多帧一起处理，提取一致的skeleton数据
+        参考Neural Marionette的多帧处理逻辑
         """
-        print(f"\n=== 步骤1：处理帧数据 ({start_frame} 到 {end_frame}) ===")
+        print(f"\n=== 步骤1：多帧联合处理 ({start_frame} 到 {end_frame}) ===")
         
         obj_files = sorted(glob.glob(os.path.join(self.folder_path, "*.obj")))
         if not obj_files:
             raise ValueError(f"在 {self.folder_path} 中未找到.obj文件")
         
         # 确定处理范围
-        if end_frame is None or end_frame >= len(obj_files):
-            end_frame = len(obj_files) - 1
-        
+        assert 0 <= start_frame < len(obj_files)
+        assert 0 <= end_frame < len(obj_files)
+
+        self.all_mesh_data = []
+
         selected_files = obj_files[start_frame:end_frame+1]
         print(f"处理 {len(selected_files)} 个文件")
         
-        # 处理每个mesh文件
+        # 第一步：加载所有帧的voxel数据
+        all_pts = []
+        all_voxels = []
+        
+
+        for i, obj_file in enumerate(selected_files):
+            print(f"加载 {i+1}/{len(selected_files)}: {os.path.basename(obj_file)}")
+
+            # mesh_info_path = os.path.join(mesh_info_folder, f"mesh_info_{i:03d}.pkl")
+            # if os.path.exists(mesh_info_path):
+            #     print(f"  ✓ 已存在mesh信息: {mesh_info_path}")
+            #     with open(mesh_info_path, 'rb') as f:
+            #         mesh_info = pickle.load(f)
+            #     all_pts.append(mesh_info['pts_raw'])
+            #     # print(f"  vox形状: {tuple(vox.shape)}")
+            #     # all_voxels.append(vox[0])
+            #     continue
+
+            try:
+                # 加载并体素化mesh
+                mesh = self.read_mesh_verts(obj_file)  # 确保mesh加载成功
+                pts_raw = np.asarray(mesh.vertices)
+                all_pts.append(pts_raw)
+                # all_voxels.append(vox[0])
+
+                # with open(mesh_info_path, 'wb') as f:
+                #     pickle.dump(mesh_info, f)
+                # print(f"  ✓ 成功加载并保存mesh信息: {mesh_info_path}")
+                
+            except Exception as e:
+                print(f"  ❌ 加载 {obj_file} 失败: {e}")
+                continue
+        
+        all_pts = np.vstack(all_pts)  # (N,3) all vertices from all meshes
+        print(f"shape: {all_pts.shape}")
+
+        bmin = all_pts.min(axis=0)  # (3,) min corner
+        blen = (all_pts.max(0) - bmin).max()
+
         for i, obj_file in enumerate(selected_files):
             print(f"处理 {i+1}/{len(selected_files)}: {os.path.basename(obj_file)}")
+            pts_norm = (all_pts[i] - bmin) / (blen + 1e-5) * 2 - 1 + np.array([0, 0, 0])
+            vox = self.points_to_voxel(pts_norm, self.opt.grid_size, is_binarized=True)
+            all_voxels.append(vox)
+
+        # 第二步：多帧联合处理获得骨骼
+        print(f"\n多帧联合骨骼检测...")
+        device = next(self.network.parameters()).device
+        print(f"使用设备: {device}")
+        
+        # 将所有voxel堆叠成序列
+        print(f"堆叠所有voxel帧...")
+        voxel_seq = torch.stack(all_voxels, dim=0).to(device) 
+        voxel_seq = voxel_seq.unsqueeze(0)  # (1, N, 1, 64, 64, 64)
+
+        frame_data_folder = os.path.join(self.output_dir, 'frame_data')
+        os.makedirs(frame_data_folder, exist_ok=True)
+
+        # clear memory
+        all_pts.clear()
+        all_voxels.clear()
+
+        with torch.no_grad():
+            # 使用所有帧进行骨骼检测，保证时间一致性
+            detector_log = self.network.kypt_detector(voxel_seq)  # (1, T, D, H, W)
+            keypoints = detector_log['keypoints']    # (1, T, K, 4)
+            first_feature = detector_log['first_feature']  # (1, C, G, G, G)
             
-            try:
-                mesh_data = process_single_mesh(obj_file, self.network, self.opt, self.output_dir)
-                self.all_mesh_data.append(mesh_data)
+            B, T, K, _ = keypoints.shape
+            print(f"检测到关键点: Batch={B}, Time={T}, Joints={K}")
+            
+            # 获取父节点关系
+            parents = self.network.dyna_module.parents.cpu().numpy()
+            
+            # 对每一帧进行解码以获得详细的骨骼信息
+            for t in range(T):
+                frame_data_path = os.path.join(frame_data_folder, f"frame_{t:03d}.pkl")
+
+                if os.path.exists(frame_data_path):
+                    print(f"  ✓ 已存在帧数据: {frame_data_path}")
+                    with open(frame_data_path, 'rb') as f:
+                        frame_data = pickle.load(f)
+                        self.all_mesh_data.append(frame_data)
+                    continue
+
+
+                # 构造当前帧的keypoints
+                selected = torch.zeros(B, 2, K, 4, device=device, dtype=keypoints.dtype)
+                selected[:, 0] = keypoints[:, t]     # 当前帧
+                selected[:, 1] = keypoints[:, min(t+1, T-1)]  # 下一帧或最后一帧
+                selected[:, :, :, 3] = keypoints[:, t, :, 3].unsqueeze(1)  # 保持置信度
                 
-                if i < 3:  # 只显示前3个的详细信息
-                    joints_world = (mesh_data['joints'] + 1) * 0.5 * mesh_data['blen'] + mesh_data['bmin']
-                    print(f"  ✓ {len(mesh_data['pts_raw'])} 顶点, {len(mesh_data['joints'])} 关节")
-                    
-            except Exception as e:
-                print(f"  ❌ 处理 {obj_file} 失败: {e}")
-                continue
+                first_frame = voxel_seq[t:t+1].unsqueeze(0)  # (1, 1, D, H, W)
+                
+                # 解码获得更详细的骨骼信息
+                decode_log = self.network.kypt_detector.decode_from_dyna(selected, first_feature, first_frame)
+                
+                # 提取当前帧的骨骼信息
+                frame_kps = keypoints[0, t].cpu().numpy()  # (K, 4)
+                joints = frame_kps[:, :3]  # (K, 3) joint positions
+                
+                # 获取旋转信息
+                affinity = detector_log['affinity'] if 'affinity' in detector_log else None
+                if affinity is not None:
+                    R = decode_log['R'][0, 0].cpu().numpy()  # (K, 3, 3)
+                else:
+                    # 如果没有affinity，使用单位旋转矩阵
+                    R = np.tile(np.eye(3), (K, 1, 1))
+                
+                # 归一化顶点坐标
+                mesh_info = all_mesh_info[t]
+                pts_norm = ((mesh_info['pts_raw'] - mesh_info['bmin']) / 
+                           (mesh_info['blen'] + 1e-5)) * 2 - 1
+                
+                # 保存帧数据
+                frame_data = {
+                    'base_name': mesh_info['base_name'],
+                    'parents': parents,
+                    'kps': frame_kps,
+                    'joints': joints,
+                    'R': R,
+                    'bmin': mesh_info['bmin'],
+                    'blen': mesh_info['blen'],
+                    'pts_raw': mesh_info['pts_raw'],
+                    'pts_norm': pts_norm,
+                    'mesh_vertices': mesh_info['mesh_vertices'],
+                    'mesh_triangles': mesh_info['mesh_triangles'],
+                }
+                
+                with open(frame_data_path, 'wb') as f:
+                    pickle.dump(frame_data, f)
+                    frame_visualization = draw_skeleton(joints, parents)
+                    o3d.visualization.draw_geometries([frame_visualization])
+                    print(f"  ✓ 保存帧数据: {frame_data_path}")
+
+                self.all_mesh_data.append(frame_data)
+                
+                if t < 3:  # 只显示前3个的详细信息
+                    joints_world = (joints + 1) * 0.5 * mesh_info['blen'] + mesh_info['bmin']
+                    print(f"  ✓ 帧{t}: {len(mesh_info['pts_raw'])} 顶点, {K} 关节")
         
         if not self.all_mesh_data:
             raise RuntimeError("没有成功处理任何mesh")
         
-        print(f"✓ 成功处理 {len(self.all_mesh_data)} 帧")
+        print(f"✓ 多帧联合处理完成: {len(self.all_mesh_data)} 帧")
+        print(f"✓ 骨骼结构一致性: {K} 个关节，相同的父节点关系")
         return len(self.all_mesh_data)
     
     def step2_detect_rest_pose(self):
@@ -412,9 +581,9 @@ class CompleteVVPipeline:
     
     def step4_compute_skinning(self):
         """
-        步骤4：使用修复后的DemBones计算蒙皮权重
+        步骤4：使用 C++ CLI 版本的 DemBones 计算蒙皮权重
         """
-        print("\n=== 步骤4：DemBones蒙皮权重计算 ===")
+        print("\n=== 步骤4：DemBones蒙皮权重计算 (C++ CLI版本) ===")
         
         if self.unified_vertices is None:
             raise RuntimeError("必须先统一网格拓扑")
@@ -666,83 +835,210 @@ class CompleteVVPipeline:
         return self._create_simple_skinning_weights(frames_vertices[0], K)
     
     def _try_demBones_with_timeout(self, frames_vertices, parents, config):
-        """运行DemBones，无超时限制版本（测试实际运行时间）"""
+        """使用 C++ CLI 版本运行 DemBones"""
         F, N, _ = frames_vertices.shape
         K = len(parents)
         
         print(f"    Rest pose: {frames_vertices[0].shape}, Animated: {frames_vertices[1:].shape}")
-        print(f"    参数: iters={config['nIters']}, nnz={config['nnz']}, 无超时限制")
+        print(f"    参数: iters={config['nIters']}, nnz={config['nnz']}")
         
+        # 查找 DemBones 可执行文件
+        demBones_exe = self._find_demBones_executable()
+        if demBones_exe is None:
+            print("    ⚠️ 未找到 DemBones 可执行文件，使用简化蒙皮权重")
+            return None
+        
+        # 创建临时目录
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                # 准备数据文件
+                input_file = os.path.join(temp_dir, 'input.dembones')
+                output_file = os.path.join(temp_dir, 'output.dembones')
+                
+                # 写入输入数据
+                self._write_demBones_input(input_file, frames_vertices, parents, config)
+                
+                # 运行 DemBones CLI
+                print(f"    运行命令: {demBones_exe}")
+                start_time = time.time()
+                
+                # DemBones CLI 命令格式: demBones input.dembones output.dembones
+                result = subprocess.run(
+                    [demBones_exe, input_file, output_file],
+                    capture_output=True,
+                    text=True,
+                    timeout=config.get('timeout', 300)
+                )
+                
+                elapsed_time = time.time() - start_time
+                
+                if result.returncode == 0:
+                    print(f"    ✅ DemBones CLI 执行成功！耗时 {elapsed_time:.2f} 秒")
+                    
+                    # 读取结果
+                    if os.path.exists(output_file):
+                        return self._read_demBones_output(output_file, frames_vertices[0], K, F)
+                    else:
+                        print("    ❌ 输出文件未生成")
+                        return None
+                else:
+                    print(f"    ❌ DemBones CLI 执行失败 (返回码: {result.returncode})")
+                    if result.stdout:
+                        print(f"    标准输出: {result.stdout[:500]}...")
+                    if result.stderr:
+                        print(f"    标准错误: {result.stderr[:500]}...")
+                    return None
+                
+            except subprocess.TimeoutExpired:
+                print(f"    ❌ DemBones CLI 超时 ({config.get('timeout', 300)} 秒)")
+                return None
+            except Exception as e:
+                print(f"    ❌ DemBones CLI 异常: {e}")
+                return None
+    
+    def _find_demBones_executable(self):
+        """查找 DemBones 可执行文件"""
+        # 常见的可能位置
+        possible_paths = [
+            'demBones.exe',  # 在 PATH 中
+            'DemBones.exe',
+            'demBones.bat',  # Windows 批处理文件
+            './demBones.exe',  # 当前目录
+            './DemBones.exe',
+            './demBones.bat',
+            './bin/demBones.exe',  # bin 目录
+            './bin/DemBones.exe',
+            './bin/demBones.bat',
+            'C:/Program Files/DemBones/demBones.exe',  # 系统安装
+            'C:/Program Files/DemBones/DemBones.exe',
+            '../demBones/bin/demBones.exe',  # 相邻目录
+            '../demBones/bin/DemBones.exe',
+            # Linux 路径
+            'demBones',
+            './demBones',
+            './bin/demBones',
+            '/usr/local/bin/demBones',
+            '/usr/bin/demBones',
+        ]
+        
+        for path in possible_paths:
+            try:
+                # 测试是否可以执行
+                result = subprocess.run([path, '--help'], 
+                                      capture_output=True, timeout=5, text=True)
+                if result.returncode == 0 or 'dembones' in result.stdout.lower() or 'usage' in result.stdout.lower():
+                    print(f"    ✓ 找到 DemBones: {path}")
+                    return path
+            except:
+                continue
+        
+        print("    ⚠️ 未找到 DemBones 可执行文件")
+        print("    📥 建议下载并编译: https://github.com/electronicarts/dem-bones")
+        print("    🔄 将使用简化蒙皮权重算法")
+        return None
+    
+    def _write_demBones_input(self, input_file, frames_vertices, parents, config):
+        """写入 DemBones 输入文件（基于官方格式）"""
+        F, N, _ = frames_vertices.shape
+        K = len(parents)
+        
+        with open(input_file, 'w') as f:
+            # 写入基本信息
+            f.write(f"# DemBones Input File\n")
+            f.write(f"nV {N}\n")  # 顶点数
+            f.write(f"nB {K}\n")  # 骨骼数
+            f.write(f"nF {F-1}\n")  # 动画帧数 (不包括rest pose)
+            f.write(f"nS 1\n")  # subject数量
+            
+            # 写入算法参数
+            f.write(f"nIters {config['nIters']}\n")
+            f.write(f"nInitIters {config['nInitIters']}\n") 
+            f.write(f"nTransIters {config['nTransIters']}\n")
+            f.write(f"nWeightsIters {config['nWeightsIters']}\n")
+            f.write(f"nnz {config['nnz']}\n")
+            f.write(f"weightsSmooth {config['weightsSmooth']}\n")
+            
+            # 写入骨骼层次结构
+            f.write("# Bone hierarchy (parents)\n")
+            for i, parent in enumerate(parents):
+                f.write(f"parent {i} {parent}\n")
+            
+            # 写入frame起始索引和subject ID
+            f.write("fStart 0\n")
+            f.write("subjectID 0\n")
+            
+            # 写入rest pose顶点
+            f.write("# Rest pose vertices\n")
+            rest_pose = frames_vertices[0]
+            for i in range(N):
+                f.write(f"v {rest_pose[i, 0]:.6f} {rest_pose[i, 1]:.6f} {rest_pose[i, 2]:.6f}\n")
+            
+            # 写入动画顶点
+            f.write("# Animated vertices\n")
+            for frame_idx in range(1, F):
+                frame_vertices = frames_vertices[frame_idx]
+                for i in range(N):
+                    f.write(f"a {frame_vertices[i, 0]:.6f} {frame_vertices[i, 1]:.6f} {frame_vertices[i, 2]:.6f}\n")
+    
+    def _read_demBones_output(self, output_file, rest_pose, K, F):
+        """读取 DemBones 输出文件"""
         try:
-            # 创建DemBones实例
-
-            dem_bones = pdb.DemBones()
-            # 设置参数
-            dem_bones.nIters = config['nIters']
-            dem_bones.nInitIters = config['nInitIters']
-            dem_bones.nTransIters = config['nTransIters']
-            dem_bones.nWeightsIters = config['nWeightsIters']
-            dem_bones.nnz = config['nnz']
-            dem_bones.weightsSmooth = config['weightsSmooth']
+            weights = None
+            N = len(rest_pose)
             
-            # 准备数据
-            rest_pose = frames_vertices[0]  # (N, 3)
-            animated_poses = frames_vertices[1:].reshape(-1, 3)  # ((F-1)*N, 3)
+            with open(output_file, 'r') as f:
+                lines = f.readlines()
             
-            # 设置DemBones数据
-            dem_bones.nV = N
-            dem_bones.nB = K
-            dem_bones.nF = F - 1
-            dem_bones.nS = 1
-            dem_bones.fStart = np.array([0], dtype=np.int32)
-            dem_bones.subjectID = np.zeros(F - 1, dtype=np.int32)
-            dem_bones.u = rest_pose
-            dem_bones.v = animated_poses
+            # 解析权重矩阵
+            # DemBones 通常输出格式为每行一个顶点的权重
+            weights = np.zeros((N, K), dtype=np.float32)
             
-            # make DemBones print debug info
-            assert np.isfinite(rest_pose).all() and np.isfinite(animated_poses).all()
-            assert animated_poses.shape[0] % rest_pose.shape[0] == 0          # 帧数整数倍
-            assert parents[0] == -1 and (parents[1:] < np.arange(1,len(parents))).all()
-
-            print(f"    开始计算... (数据: {N} 顶点, {K} 骨骼, {F-1} 动画帧)")
-            start_time = time.time()
-
-            # 计算（无超时）
-            dem_bones.compute()
+            reading_weights = False
+            vertex_idx = 0
             
-            # 获取结果
-            weights = dem_bones.get_weights()  # (K, N)
-            transformations = dem_bones.get_transformations()
+            for line in lines:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                
+                # 检查是否开始读取权重
+                if 'weight' in line.lower() or reading_weights:
+                    reading_weights = True
+                    
+                    # 尝试解析权重数据
+                    try:
+                        if line.startswith('w ') or ' ' in line:
+                            values = line.replace('w ', '').split()
+                            if len(values) >= K and vertex_idx < N:
+                                for k in range(K):
+                                    weights[vertex_idx, k] = float(values[k])
+                                vertex_idx += 1
+                    except:
+                        continue
             
-            elapsed_time = time.time() - start_time
-            print(f"    ✅ 计算完成！耗时 {elapsed_time:.2f} 秒")
-            
-            # 安全检查transformations
-            if transformations is not None:
-                print(f"    权重矩阵: {weights.shape}, 变换: {len(transformations)}")
-            else:
-                print(f"    权重矩阵: {weights.shape}, 变换: None")
-            
-            # 处理权重
-            weights = weights.T.copy()  # 转置为(N, K)
+            # 如果没有读取到权重，创建简单权重
+            if vertex_idx == 0:
+                print("    ⚠️ 无法解析DemBones输出，创建简化权重")
+                return self._create_simple_skinning_weights(rest_pose, K)
             
             # 归一化权重
             row_sums = weights.sum(axis=1, keepdims=True)
             row_sums[row_sums < 1e-8] = 1.0
             weights = weights / row_sums
             
-            # 创建变换矩阵
+            # 创建单位变换矩阵（简化版本）
             T_all = np.zeros((F, K, 4, 4), dtype=np.float32)
             for f in range(F):
                 for b in range(K):
                     T_all[f, b] = np.eye(4)
             
-            return (rest_pose, weights, T_all)
+            print(f"    ✓ 读取权重矩阵: {weights.shape}")
+            print(f"    权重范围: [{weights.min():.4f}, {weights.max():.4f}]")
             
+            return (rest_pose, weights, T_all)
+                
         except Exception as e:
-            print(f"    ❌ DemBones异常: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"    ❌ 读取输出文件失败: {e}")
             return None
     
     def _create_simple_skinning_weights(self, rest_pose, K):
@@ -969,20 +1265,20 @@ def main():
         pipeline.step1_process_frames(args.start_frame, args.end_frame)
         
         # 步骤2：检测rest pose
-        pipeline.step2_detect_rest_pose()
+        # pipeline.step2_detect_rest_pose()
         
-        # 步骤3：统一网格拓扑
-        pipeline.step3_unify_mesh_topology()
+        # # 步骤3：统一网格拓扑
+        # pipeline.step3_unify_mesh_topology()
         
-        # 步骤4：计算蒙皮权重
-        pipeline.step4_compute_skinning()
+        # # 步骤4：计算蒙皮权重
+        # pipeline.step4_compute_skinning()
         
-        # 步骤5：生成插值
-        if args.interp_from is not None and args.interp_to is not None:
-            pipeline.step5_generate_interpolation(args.start_frame, args.end_frame, args.num_interp)
-        else:
-            # 默认在前两帧之间插值
-            pipeline.step5_generate_interpolation(0, min(1, len(pipeline.all_mesh_data)-1), args.num_interp)
+        # # 步骤5：生成插值
+        # if args.interp_from is not None and args.interp_to is not None:
+        #     pipeline.step5_generate_interpolation(args.start_frame, args.end_frame, args.num_interp)
+        # else:
+        #     # 默认在前两帧之间插值
+        #     pipeline.step5_generate_interpolation(0, min(1, len(pipeline.all_mesh_data)-1), args.num_interp)
         
         print("\n🎉 完整管道执行成功！")
         print(f"📁 结果保存在: {pipeline.output_dir}")
