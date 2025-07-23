@@ -28,10 +28,13 @@ class InverseMeshCanonicalizer:
         self.reference_mesh = None
         self.canonicalization_maps = {}
         
+        # 每帧的归一化参数，用于处理每个mesh独立归一化的情况
+        self.frame_normalization_params = {}
+        
     def load_skeleton_data(self):
         """加载numpy格式的骨骼数据"""
         try:
-            # 加载关键点数据 [num_frames, num_joints, 3]
+            # 加载关键点数据 [num_frames, num_joints, 4] (x, y, z, confidence)
             self.keypoints = np.load(self.skeleton_data_dir / 'keypoints.npy')
             
             # 加载变换矩阵 [num_frames, num_joints, 4, 4]
@@ -45,7 +48,7 @@ class InverseMeshCanonicalizer:
             print(f"成功加载骨骼数据:")
             print(f"  - 帧数: {self.num_frames}")
             print(f"  - 关节数: {self.num_joints}")
-            print(f"  - 关键点形状: {self.keypoints.shape}")
+            print(f"  - 关键点形状: {self.keypoints.shape} (包含置信度)")
             print(f"  - 变换矩阵形状: {self.transforms.shape}")
             print(f"  - 父节点关系形状: {self.parents.shape}")
             
@@ -80,6 +83,59 @@ class InverseMeshCanonicalizer:
         except Exception as e:
             print(f"警告: 无法加载可选数据: {e}")
 
+    def compute_mesh_normalization_params(self, mesh):
+        """
+        计算单个mesh的归一化参数（模拟episodic_normalization的过程）
+        
+        Args:
+            mesh: Open3D mesh对象
+            
+        Returns:
+            normalization_params: 归一化参数字典
+        """
+        vertices = np.asarray(mesh.vertices)
+        
+        # 计算边界框（与episodic_normalization相同的逻辑）
+        bmax = np.amax(vertices, axis=0)
+        bmin = np.amin(vertices, axis=0)
+        blen = (bmax - bmin).max()
+        
+        # 默认的归一化参数（与episodic_normalization默认值一致）
+        scale = 1.0
+        x_trans = 0.0
+        z_trans = 0.0
+        
+        params = {
+            'bmin': bmin,
+            'bmax': bmax,
+            'blen': blen,
+            'scale': scale,
+            'x_trans': x_trans,
+            'z_trans': z_trans
+        }
+        
+        return params
+    
+    def normalize_mesh_vertices(self, vertices, normalization_params):
+        """
+        使用给定的归一化参数将mesh顶点归一化
+        
+        Args:
+            vertices: 原始顶点坐标
+            normalization_params: 归一化参数
+            
+        Returns:
+            normalized_vertices: 归一化后的顶点坐标
+        """
+        params = normalization_params
+        
+        # 应用与episodic_normalization相同的变换
+        # 公式: ((seq - bmin) * scale / (blen + 1e-5)) * 2 - 1 + [x_trans, 0, z_trans]
+        trans_offset = np.array([params['x_trans'], 0, params['z_trans']])
+        normalized = ((vertices - params['bmin']) * params['scale'] / (params['blen'] + 1e-5)) * 2 - 1 + trans_offset
+        
+        return normalized
+
     def load_mesh_sequence(self, mesh_folder_path):
         """
         加载网格序列
@@ -96,6 +152,17 @@ class InverseMeshCanonicalizer:
         # 加载参考网格
         self.reference_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[self.reference_frame_idx]))
         print(f"参考网格顶点数: {len(self.reference_mesh.vertices)}")
+        
+        # 预计算参考网格的归一化参数
+        self.frame_normalization_params[self.reference_frame_idx] = self.compute_mesh_normalization_params(self.reference_mesh)
+        print(f"参考网格归一化参数已计算")
+        
+        # 预计算参考网格的关节分配（用于加速后续对应关系计算）
+        ref_vertices = np.asarray(self.reference_mesh.vertices)
+        ref_norm_vertices = self.normalize_mesh_vertices(ref_vertices, self.frame_normalization_params[self.reference_frame_idx])
+        ref_joints = self.keypoints[self.reference_frame_idx, :, :3]
+        self.reference_vertex_joints = self.assign_dominant_joints(ref_norm_vertices, ref_joints)
+        print(f"参考网格关节分配已预计算")
 
     def compute_bone_influenced_vertices(self, mesh, frame_idx, influence_radius=0.1):
         """
@@ -109,11 +176,21 @@ class InverseMeshCanonicalizer:
         Returns:
             vertex_bone_weights: 顶点到骨骼的权重矩阵 [V, J]
         """
-        vertices = mesh.vertices
-        keypoints = self.keypoints[frame_idx]  # [num_joints, 3]
+        # 获取原始顶点坐标
+        vertices = np.asarray(mesh.vertices)
         
-        # 计算顶点到关节点的距离
-        distances = cdist(vertices, keypoints)
+        # 获取归一化空间的keypoints，只取前3个坐标（忽略置信度）
+        normalized_keypoints = self.keypoints[frame_idx, :, :3]  # [num_joints, 3]
+        
+        # 计算当前mesh的归一化参数
+        if frame_idx not in self.frame_normalization_params:
+            self.frame_normalization_params[frame_idx] = self.compute_mesh_normalization_params(mesh)
+        
+        # 将mesh顶点归一化到与keypoints相同的空间
+        normalized_vertices = self.normalize_mesh_vertices(vertices, self.frame_normalization_params[frame_idx])
+        
+        # 在归一化空间中计算距离
+        distances = cdist(normalized_vertices, normalized_keypoints)
         
         # 使用高斯权重
         weights = np.exp(-distances**2 / (2 * influence_radius**2))
@@ -134,57 +211,90 @@ class InverseMeshCanonicalizer:
         Returns:
             features: 顶点特征矩阵 [V, D]
         """
-        vertices = mesh.vertices
+        vertices = np.asarray(mesh.vertices)
         
         # 几何特征
         geometric_features = []
         
-        # 1. 顶点坐标（骨骼空间）
-        keypoints = self.keypoints[frame_idx]  # [num_joints, 3]
+        # 1. 顶点坐标（归一化空间）
+        # 计算当前mesh的归一化参数（如果还没有计算过）
+        if frame_idx not in self.frame_normalization_params:
+            self.frame_normalization_params[frame_idx] = self.compute_mesh_normalization_params(mesh)
+        
+        # 将顶点归一化到与keypoints相同的空间
+        normalized_vertices = self.normalize_mesh_vertices(vertices, self.frame_normalization_params[frame_idx])
+        geometric_features.append(normalized_vertices)
+        
+        # 2. 骨骼空间变换的顶点坐标（可选，作为额外特征）
+        keypoints = self.keypoints[frame_idx, :, :3]  # [num_joints, 3] 只取坐标，忽略置信度
         transforms = self.transforms[frame_idx]  # [num_joints, 4, 4]
         
-        # 将顶点变换到骨骼空间
-        vertices_homogeneous = np.hstack([vertices, np.ones((len(vertices), 1))])
+        # 将归一化顶点变换到骨骼空间
+        vertices_homogeneous = np.hstack([normalized_vertices, np.ones((len(normalized_vertices), 1))])
         
         # 使用第一个关节的逆变换作为根变换
         if len(transforms) > 0:
             root_inv_transform = np.linalg.inv(transforms[0])
             canonical_vertices = (root_inv_transform @ vertices_homogeneous.T).T[:, :3]
         else:
-            canonical_vertices = vertices
+            canonical_vertices = normalized_vertices
         
         geometric_features.append(canonical_vertices)
         
-        # 2. 法向量
+        # 3. 法向量
         if hasattr(mesh, 'vertex_normals') and mesh.vertex_normals is not None:
-            geometric_features.append(mesh.vertex_normals)
+            geometric_features.append(np.asarray(mesh.vertex_normals))
         else:
             # 计算法向量
-            mesh.fix_normals()
-            geometric_features.append(mesh.vertex_normals)
+            mesh.compute_vertex_normals()
+            geometric_features.append(np.asarray(mesh.vertex_normals))
         
-        # 3. 骨骼权重特征
+        # 4. 骨骼权重特征
         bone_weights = self.compute_bone_influenced_vertices(mesh, frame_idx)
         geometric_features.append(bone_weights)
         
-        # 4. 曲率特征（简化版）
+        # 5. 曲率特征（简化版，优化性能）
         try:
-            # 计算每个顶点到其邻居的平均距离作为局部曲率的近似
+            # 使用更高效的方法计算曲率特征
+            # 方法1：基于顶点的局部密度而不是最近邻
+            center = np.mean(vertices, axis=0)
+            distances_to_center = np.linalg.norm(vertices - center, axis=1)
+            
+            # 计算每个顶点在局部区域的密度特征
             vertex_curvature = []
+            sample_size = min(len(vertices), 1000)  # 限制样本大小以提高性能
+            
+            if len(vertices) > sample_size:
+                # 如果顶点太多，使用采样
+                sample_indices = np.random.choice(len(vertices), sample_size, replace=False)
+                sample_vertices = vertices[sample_indices]
+            else:
+                sample_vertices = vertices
+                sample_indices = np.arange(len(vertices))
+            
+            # 使用KDTree进行高效的最近邻搜索
+            from sklearn.neighbors import NearestNeighbors
+            nbrs = NearestNeighbors(n_neighbors=min(11, len(sample_vertices)), algorithm='kd_tree').fit(sample_vertices)
+            
             for i in range(len(vertices)):
                 vertex = vertices[i]
-                # 找到最近的10个顶点
-                distances_to_vertex = np.linalg.norm(vertices - vertex, axis=1)
-                nearest_indices = np.argsort(distances_to_vertex)[1:11]  # 排除自己
-                nearest_vertices = vertices[nearest_indices]
                 
-                # 计算平均距离和方差作为曲率特征
-                mean_dist = np.mean(np.linalg.norm(nearest_vertices - vertex, axis=1))
-                var_dist = np.var(np.linalg.norm(nearest_vertices - vertex, axis=1))
+                # 找到最近的邻居
+                distances, indices = nbrs.kneighbors([vertex])
+                neighbor_distances = distances[0][1:]  # 排除自己
+                
+                if len(neighbor_distances) > 0:
+                    mean_dist = np.mean(neighbor_distances)
+                    var_dist = np.var(neighbor_distances) if len(neighbor_distances) > 1 else 0.0
+                else:
+                    mean_dist = 0.0
+                    var_dist = 0.0
+                
                 vertex_curvature.append([mean_dist, var_dist])
             
             geometric_features.append(np.array(vertex_curvature))
-        except:
+        except Exception as e:
+            print(f"曲率计算失败，使用零特征: {e}")
             # 如果曲率计算失败，使用零特征
             geometric_features.append(np.zeros((len(vertices), 2)))
         
@@ -193,9 +303,150 @@ class InverseMeshCanonicalizer:
         
         return features
     
+    def compute_skeleton_driven_correspondence(self, target_mesh, target_frame_idx):
+        """
+        基于骨骼关节驱动的快速顶点对应关系计算
+        
+        Args:
+            target_mesh: 目标网格
+            target_frame_idx: 目标帧索引
+            
+        Returns:
+            correspondence_map: 从目标顶点索引到参考顶点索引的映射
+        """
+        # 获取参考帧和目标帧的关节点
+        ref_joints = self.keypoints[self.reference_frame_idx, :, :3]  # [num_joints, 3]
+        target_joints = self.keypoints[target_frame_idx, :, :3]  # [num_joints, 3]
+        
+        # 获取网格顶点
+        ref_vertices = np.asarray(self.reference_mesh.vertices)
+        target_vertices = np.asarray(target_mesh.vertices)
+        
+        # 计算归一化参数
+        if target_frame_idx not in self.frame_normalization_params:
+            self.frame_normalization_params[target_frame_idx] = self.compute_mesh_normalization_params(target_mesh)
+        
+        # 归一化顶点到与keypoints相同的空间
+        ref_norm_vertices = self.normalize_mesh_vertices(ref_vertices, self.frame_normalization_params[self.reference_frame_idx])
+        target_norm_vertices = self.normalize_mesh_vertices(target_vertices, self.frame_normalization_params[target_frame_idx])
+        
+        # 使用预计算的参考网格关节分配
+        ref_vertex_joints = self.reference_vertex_joints
+        
+        # 为目标网格顶点分配主导关节
+        target_vertex_joints = self.assign_dominant_joints(target_norm_vertices, target_joints)
+        
+        # 基于关节对应关系进行顶点匹配
+        correspondence_map = self.match_vertices_by_skeleton(
+            ref_norm_vertices, target_norm_vertices, 
+            ref_vertex_joints, target_vertex_joints,
+            ref_joints, target_joints
+        )
+        
+        return correspondence_map
+    
+    def assign_dominant_joints(self, vertices, joints, top_k=3):
+        """
+        为每个顶点分配影响最大的前k个关节
+        
+        Args:
+            vertices: 顶点坐标 [V, 3]
+            joints: 关节点坐标 [J, 3] 
+            top_k: 保留前k个最近关节
+            
+        Returns:
+            vertex_joints: 每个顶点的主导关节信息 [V, top_k, 2] (joint_idx, weight)
+        """
+        # 计算顶点到关节的距离
+        distances = cdist(vertices, joints)  # [V, J]
+        
+        # 使用高斯权重
+        sigma = 0.1
+        weights = np.exp(-distances**2 / (2 * sigma**2))
+        
+        # 归一化权重
+        weights = weights / (np.sum(weights, axis=1, keepdims=True) + 1e-8)
+        
+        # 获取每个顶点的前k个最强关节
+        vertex_joints = []
+        for v in range(len(vertices)):
+            top_indices = np.argsort(weights[v])[-top_k:][::-1]  # 降序
+            top_weights = weights[v][top_indices]
+            vertex_joints.append(list(zip(top_indices, top_weights)))
+        
+        return vertex_joints
+    
+    def match_vertices_by_skeleton(self, ref_vertices, target_vertices, 
+                                 ref_vertex_joints, target_vertex_joints,
+                                 ref_joints, target_joints):
+        """
+        基于骨骼关节对应关系匹配顶点
+        
+        Args:
+            ref_vertices: 参考顶点 [V_ref, 3]
+            target_vertices: 目标顶点 [V_target, 3]
+            ref_vertex_joints: 参考顶点的关节分配
+            target_vertex_joints: 目标顶点的关节分配
+            ref_joints: 参考关节点 [J, 3]
+            target_joints: 目标关节点 [J, 3]
+            
+        Returns:
+            correspondence_map: [V_target] -> V_ref
+        """
+        correspondence_map = np.zeros(len(target_vertices), dtype=int)
+        
+        # 按关节分组处理顶点
+        joint_groups = {}
+        
+        # 将目标顶点按主导关节分组
+        for v_idx, joint_list in enumerate(target_vertex_joints):
+            primary_joint = joint_list[0][0]  # 最强关节
+            if primary_joint not in joint_groups:
+                joint_groups[primary_joint] = []
+            joint_groups[primary_joint].append(v_idx)
+        
+        print(f"按{len(joint_groups)}个关节分组处理顶点...")
+        
+        for joint_idx, target_vertex_indices in joint_groups.items():
+            if len(target_vertex_indices) == 0:
+                continue
+                
+            # 找到参考网格中属于同一关节的顶点
+            ref_vertex_indices = []
+            for v_idx, joint_list in enumerate(ref_vertex_joints):
+                if len(joint_list) > 0 and joint_list[0][0] == joint_idx:
+                    ref_vertex_indices.append(v_idx)
+            
+            if len(ref_vertex_indices) == 0:
+                # 如果参考网格中没有对应关节的顶点，使用全局最近邻
+                ref_vertex_indices = list(range(len(ref_vertices)))
+            
+            # 在该关节的局部空间中进行匹配
+            target_local_vertices = target_vertices[target_vertex_indices]
+            ref_local_vertices = ref_vertices[ref_vertex_indices]
+            
+            # 转换到关节局部坐标系
+            joint_center_target = target_joints[joint_idx]
+            joint_center_ref = ref_joints[joint_idx]
+            
+            target_local_relative = target_local_vertices - joint_center_target
+            ref_local_relative = ref_local_vertices - joint_center_ref
+            
+            # 使用最近邻匹配
+            if len(ref_local_vertices) > 0:
+                nbrs = NearestNeighbors(n_neighbors=1, algorithm='kd_tree').fit(ref_local_relative)
+                _, indices = nbrs.kneighbors(target_local_relative)
+                
+                # 映射回全局索引
+                for i, target_v_idx in enumerate(target_vertex_indices):
+                    ref_v_idx = ref_vertex_indices[indices[i][0]]
+                    correspondence_map[target_v_idx] = ref_v_idx
+        
+        return correspondence_map
+    
     def find_vertex_correspondence(self, target_mesh, target_frame_idx):
         """
-        找到目标网格与参考网格的顶点对应关系
+        找到目标网格与参考网格的顶点对应关系（原始特征匹配方法）
         
         Args:
             target_mesh: 目标网格
@@ -234,24 +485,36 @@ class InverseMeshCanonicalizer:
             reordered_mesh: 重新排序的网格
         """
         # 创建新的顶点排列
-        new_vertices = np.zeros_like(self.reference_mesh.vertices)
+        new_vertices = np.zeros_like(np.asarray(self.reference_mesh.vertices))
         
         for target_idx, ref_idx in enumerate(correspondence_map):
             if target_idx < len(mesh.vertices):
-                new_vertices[ref_idx] = mesh.vertices[target_idx]
+                new_vertices[ref_idx] = np.asarray(mesh.vertices)[target_idx]
         
         # 创建新的网格
-        # 注意：面可能需要相应调整，这里简化处理
-        reordered_mesh = o3d.geometry.TriangleMesh(vertices=o3d.utility.Vector3dVector(new_vertices), faces=o3d.utility.Vector3iVector(mesh.faces))
+        reordered_mesh = o3d.geometry.TriangleMesh()
+        reordered_mesh.vertices = o3d.utility.Vector3dVector(new_vertices)
+        
+        # 复制面信息（如果存在）
+        if hasattr(mesh, 'triangles') and len(mesh.triangles) > 0:
+            reordered_mesh.triangles = o3d.utility.Vector3iVector(np.asarray(mesh.triangles))
+        
+        # 复制其他属性（如果存在）
+        if hasattr(mesh, 'vertex_normals') and len(mesh.vertex_normals) > 0:
+            reordered_mesh.vertex_normals = mesh.vertex_normals
+        if hasattr(mesh, 'vertex_colors') and len(mesh.vertex_colors) > 0:
+            reordered_mesh.vertex_colors = mesh.vertex_colors
+            
         return reordered_mesh
     
-    def optimize_correspondence_with_temporal_consistency(self, mesh_sequence_subset=None, max_frames=10):
+    def optimize_correspondence_with_temporal_consistency(self, mesh_sequence_subset=None, max_frames=10, use_skeleton_driven=True):
         """
         使用时间一致性优化对应关系
         
         Args:
             mesh_sequence_subset: 网格序列子集, 如果为None则处理所有
             max_frames: 最大处理帧数
+            use_skeleton_driven: 是否使用骨骼驱动的快速方法
         """
         if mesh_sequence_subset is None:
             frame_indices = list(range(min(len(self.mesh_files), max_frames)))
@@ -263,6 +526,9 @@ class InverseMeshCanonicalizer:
         meshes = {}
         
         # 加载网格并计算初始对应关系
+        method_name = "骨骼驱动" if use_skeleton_driven else "特征匹配"
+        print(f"开始计算基于{method_name}的顶点对应关系...")
+        
         for i, frame_idx in enumerate(tqdm(frame_indices, desc="计算初始对应关系")):
             if frame_idx == self.reference_frame_idx:
                 # 参考帧使用恒等映射
@@ -271,7 +537,13 @@ class InverseMeshCanonicalizer:
             else:
                 mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_idx]))
                 meshes[frame_idx] = mesh
-                correspondences[frame_idx] = self.find_vertex_correspondence(mesh, frame_idx)
+                
+                if use_skeleton_driven:
+                    # 使用骨骼驱动的快速对应关系计算
+                    correspondences[frame_idx] = self.compute_skeleton_driven_correspondence(mesh, frame_idx)
+                else:
+                    # 使用原始的特征匹配方法
+                    correspondences[frame_idx] = self.find_vertex_correspondence(mesh, frame_idx)
         
         # 时间一致性优化
         print("进行时间一致性优化...")
@@ -296,13 +568,14 @@ class InverseMeshCanonicalizer:
         
         return correspondences, meshes
     
-    def canonicalize_mesh_sequence(self, output_folder, max_frames=None):
+    def canonicalize_mesh_sequence(self, output_folder, max_frames=None, use_skeleton_driven=True):
         """
         对整个网格序列进行统一化
         
         Args:
             output_folder: 输出文件夹路径
             max_frames: 最大处理帧数，None表示处理所有
+            use_skeleton_driven: 是否使用骨骼驱动的快速对应关系计算
         """
         output_path = Path(output_folder)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -317,7 +590,7 @@ class InverseMeshCanonicalizer:
         
         # 优化对应关系
         correspondences, meshes = self.optimize_correspondence_with_temporal_consistency(
-            frame_indices, max_frames
+            frame_indices, max_frames, use_skeleton_driven
         )
         
         # 保存统一化的网格
@@ -340,7 +613,9 @@ class InverseMeshCanonicalizer:
             
             # 保存网格
             output_file = output_path / f"canonical_frame_{frame_idx:06d}.obj"
-            canonical_mesh.export(str(output_file))
+            success = o3d.io.write_triangle_mesh(str(output_file), canonical_mesh)
+            if not success:
+                print(f"警告: 保存网格文件失败: {output_file}")
             
             # 保存对应关系信息
             canonicalized_info['correspondences'][str(frame_idx)] = correspondence.tolist()
