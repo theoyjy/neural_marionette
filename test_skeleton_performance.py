@@ -5,7 +5,7 @@
 
 import time
 import numpy as np
-from InverseMeshCanonicalizer import InverseMeshCanonicalizer
+from Skinning import InverseMeshCanonicalizer
 from pathlib import Path
 
 def test_performance_comparison():

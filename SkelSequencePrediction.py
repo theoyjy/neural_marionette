@@ -169,7 +169,7 @@ class SequenceSkeletonPredictor:
 
         # save normalized points
         if points_sequence is not None:
-            np.save(os.path.join(output_dir, 'points_sequence.npy'), np.stack(points_sequence, axis=0))
+            # np.save(os.path.join(output_dir, 'points_sequence.npy'), np.stack(points_sequence, axis=0))
             self.visualize_skeleton_sequence(results, output_dir, points_sequence)
     
     def visualize_skeleton_sequence(self, results, output_dir, points_sequence, 
@@ -263,7 +263,7 @@ def main():
     
     # 加载网格序列
     voxel_sequence, mesh_sequence, points_sequence = predictor.load_mesh_sequence(
-        mesh_folder, file_pattern="*.obj", max_frames=10  # 限制最大帧数
+        mesh_folder, file_pattern="*.obj", max_frames=160  # 限制最大帧数
     )
     
     # 预测骨骼

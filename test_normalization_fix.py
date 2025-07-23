@@ -5,7 +5,7 @@
 
 import numpy as np
 import open3d as o3d
-from InverseMeshCanonicalizer import InverseMeshCanonicalizer
+from Skinning import InverseMeshCanonicalizer
 from pathlib import Path
 import scipy
 
