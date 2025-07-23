@@ -1,0 +1,20 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Debug vis_generation.py",
+			"type": "shell",
+			"command": "C:\\Users\\sky\\miniconda3\\Scripts\\conda.exe",
+			"args": [
+				"run",
+				"-n",
+				"nmario",
+				"python",
+				"vis_generation.py"
+			],
+			"group": "build",
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}
