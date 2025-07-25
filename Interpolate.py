@@ -585,6 +585,32 @@ class VolumetricInterpolator:
                 transformed_vertices = self.denormalize_mesh_vertices(
                     transformed_vertices_norm, global_normalization_params
                 )
+                
+                # 修复坐标系问题：将骨骼变换到网格坐标系
+                print(f"🔧 修复坐标系对齐...")
+                
+                # 计算网格中心
+                mesh_center = np.mean(transformed_vertices, axis=0)
+                
+                # 计算骨骼中心（使用插值后的绝对变换）
+                joint_positions = interpolated_transforms[:, :3, 3]
+                joint_center = np.mean(joint_positions, axis=0)
+                
+                # 计算偏移量
+                offset = mesh_center - joint_center
+                
+                # 调整骨骼位置到网格坐标系
+                adjusted_transforms = interpolated_transforms.copy()
+                for j in range(self.num_joints):
+                    adjusted_transforms[j][:3, 3] += offset
+                
+                # 更新插值后的变换
+                interpolated_transforms = adjusted_transforms
+                
+                print(f"  - 网格中心: {mesh_center}")
+                print(f"  - 调整前骨骼中心: {joint_center}")
+                print(f"  - 调整后骨骼中心: {np.mean(adjusted_transforms[:, :3, 3], axis=0)}")
+                print(f"  - 偏移量: {offset}")
             else:
                 # 如果没有权重，使用改进的顶点插值
                 mesh_start = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_start]))
@@ -953,6 +979,8 @@ class VolumetricInterpolator:
         """
         可视化单个插值帧的骨骼和网格
         
+        修复：确保骨骼和网格在同一个坐标系中
+        
         Args:
             frame_data: 插值帧数据
             output_path: 输出路径（可选）
@@ -970,9 +998,40 @@ class VolumetricInterpolator:
             mesh.paint_uniform_color([0.7, 0.7, 0.7])  # 灰色
             vis.add_geometry(mesh)
             
+            # 获取网格顶点以确定坐标系
+            mesh_vertices = np.asarray(mesh.vertices)
+            mesh_center = np.mean(mesh_vertices, axis=0)
+            mesh_scale = np.max(mesh_vertices, axis=0) - np.min(mesh_vertices, axis=0)
+            
             # 添加骨骼
             transforms = frame_data['transforms']
             keypoints = frame_data['keypoints']
+            
+            # 检查骨骼是否在正确的坐标系中
+            joint_positions = transforms[:, :3, 3]
+            joint_center = np.mean(joint_positions, axis=0)
+            
+            # 如果骨骼和网格中心差距太大，说明坐标系不匹配
+            center_distance = np.linalg.norm(joint_center - mesh_center)
+            print(f"🔍 坐标系检查:")
+            print(f"  - 网格中心: {mesh_center}")
+            print(f"  - 骨骼中心: {joint_center}")
+            print(f"  - 中心距离: {center_distance:.6f}")
+            
+            # 如果距离太大，将骨骼变换到网格坐标系
+            if center_distance > 1.0:  # 阈值可调整
+                print(f"⚠️  检测到坐标系不匹配，调整骨骼位置...")
+                
+                # 计算偏移量
+                offset = mesh_center - joint_center
+                
+                # 调整所有关节位置
+                adjusted_transforms = transforms.copy()
+                for j in range(self.num_joints):
+                    adjusted_transforms[j][:3, 3] += offset
+                
+                transforms = adjusted_transforms
+                print(f"✅ 骨骼已调整，新中心: {np.mean(transforms[:, :3, 3], axis=0)}")
             
             # 绘制关节球体
             for j in range(self.num_joints):
