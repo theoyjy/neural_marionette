@@ -398,71 +398,151 @@ class AutoSkinning:
     def optimize_sampled_weights(self, rest_vertices, target_vertices, weights_init, 
                                relative_transforms, regularization_lambda, max_iter):
         """
-        优化采样的权重（较小规模）
+        优化采样的权重（高效版本 - 多线程 + 向量化）
         """
+        import threading
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time
+        
         num_vertices, num_joints = weights_init.shape
         optimized_weights = weights_init.copy()
         
-        print(f"优化采样权重: {num_vertices} 顶点")
+        print(f"🚀 高效优化采样权重: {num_vertices} 顶点")
         
-        # 使用块优化，但块更大
-        chunk_size = 500  # 更大的块
-        learning_rate = 0.02  # 更大的学习率
+        # 优化参数
+        chunk_size = 1000  # 更大的块以提高并行效率
+        learning_rate = 0.03  # 更大的学习率
+        num_threads = min(8, (num_vertices + chunk_size - 1) // chunk_size)  # 动态线程数
         
+        print(f"  使用 {num_threads} 个线程，块大小: {chunk_size}")
+        
+        # 预计算变换矩阵的转置，避免重复计算
+        transforms_t = relative_transforms.transpose(0, 2, 1)  # [J, 4, 4] -> [J, 4, 4]
+        
+        def optimize_chunk(chunk_data):
+            """优化单个数据块"""
+            chunk_indices, chunk_rest, chunk_target, chunk_weights = chunk_data
+            
+            # 向量化的LBS变换计算
+            def fast_apply_lbs(vertices, weights, transforms):
+                """快速LBS变换（向量化版本）"""
+                num_verts = vertices.shape[0]
+                vertices_homo = np.hstack([vertices, np.ones((num_verts, 1))])  # [N, 4]
+                
+                # 预计算所有关节的变换结果
+                transformed_vertices = np.zeros((num_verts, 3))
+                
+                # 向量化计算
+                for j in range(num_joints):
+                    # 使用预计算的变换矩阵
+                    joint_transform = transforms[j]  # [4, 4]
+                    transformed_homo = (joint_transform @ vertices_homo.T).T  # [N, 4]
+                    transformed_xyz = transformed_homo[:, :3]  # [N, 3]
+                    
+                    # 权重应用
+                    joint_weights = weights[:, j:j+1]  # [N, 1]
+                    transformed_vertices += joint_weights * transformed_xyz
+                
+                return transformed_vertices
+            
+            # 快速梯度计算
+            def compute_gradient_fast(weights, vertices, target):
+                """快速梯度计算（向量化）"""
+                predicted = fast_apply_lbs(vertices, weights, relative_transforms)
+                error = predicted - target
+                
+                # 计算每个顶点的主要关节
+                top_k = min(3, num_joints)  # 只优化前3个关节
+                top_joints = np.argsort(weights, axis=1)[:, -top_k:]  # [N, top_k]
+                
+                gradient = np.zeros_like(weights)
+                eps = 1e-5
+                
+                # 批量计算梯度
+                for k in range(top_k):
+                    joint_idx = top_joints[:, k]  # [N]
+                    
+                    # 创建扰动权重
+                    weights_plus = weights.copy()
+                    for i in range(len(weights)):
+                        weights_plus[i, joint_idx[i]] += eps
+                    
+                    # 归一化
+                    weights_plus = weights_plus / (np.sum(weights_plus, axis=1, keepdims=True) + 1e-8)
+                    
+                    # 计算扰动后的预测
+                    predicted_plus = fast_apply_lbs(vertices, weights_plus, relative_transforms)
+                    error_plus = predicted_plus - target
+                    
+                    # 计算梯度
+                    loss = np.mean(np.sum(error**2, axis=1))
+                    loss_plus = np.mean(np.sum(error_plus**2, axis=1))
+                    
+                    # 批量更新梯度
+                    for i in range(len(weights)):
+                        gradient[i, joint_idx[i]] = (loss_plus - loss) / eps
+                
+                return gradient
+            
+            # 主优化循环
+            for sub_iter in range(3):  # 增加内层迭代次数
+                # 计算当前预测
+                predicted = fast_apply_lbs(chunk_rest, chunk_weights, relative_transforms)
+                error = predicted - chunk_target
+                
+                # 计算梯度
+                gradient = compute_gradient_fast(chunk_weights, chunk_rest, chunk_target)
+                
+                # 更新权重
+                chunk_weights -= learning_rate * gradient
+                chunk_weights = np.maximum(chunk_weights, 0)
+                chunk_weights = chunk_weights / (np.sum(chunk_weights, axis=1, keepdims=True) + 1e-8)
+            
+            # 计算最终损失
+            final_predicted = fast_apply_lbs(chunk_rest, chunk_weights, relative_transforms)
+            chunk_loss = np.mean(np.sum((final_predicted - chunk_target)**2, axis=1))
+            
+            return chunk_indices, chunk_weights, chunk_loss
+        
+        # 主优化循环
+        start_time = time.time()
         for iteration in range(max_iter):
             total_loss = 0.0
             
             # 随机打乱顶点顺序
             perm = np.random.permutation(num_vertices)
             
+            # 准备数据块
+            chunk_data_list = []
             for start_idx in range(0, num_vertices, chunk_size):
                 end_idx = min(start_idx + chunk_size, num_vertices)
                 chunk_indices = perm[start_idx:end_idx]
                 
-                # 提取当前块
                 chunk_rest = rest_vertices[chunk_indices]
                 chunk_target = target_vertices[chunk_indices]
                 chunk_weights = optimized_weights[chunk_indices].copy()
                 
-                # 简化的梯度下降 - 只做一次内层迭代
-                predicted = self.apply_lbs_transform(chunk_rest, chunk_weights, relative_transforms)
-                error = predicted - chunk_target
-                
-                # 简化的梯度计算 - 只计算主要关节的梯度
-                gradient = np.zeros_like(chunk_weights)
-                eps = 1e-5
-                
-                for i in range(len(chunk_weights)):
-                    # 只优化权重最大的前5个关节
-                    top_joints = np.argsort(chunk_weights[i])[-5:]
-                    
-                    for j in top_joints:
-                        chunk_weights_plus = chunk_weights.copy()
-                        chunk_weights_plus[i, j] += eps
-                        chunk_weights_plus[i] = chunk_weights_plus[i] / (np.sum(chunk_weights_plus[i]) + 1e-8)
-                        
-                        predicted_plus = self.apply_lbs_transform(chunk_rest, chunk_weights_plus, relative_transforms)
-                        error_plus = predicted_plus - chunk_target
-                        
-                        loss = np.mean(np.sum(error**2, axis=1))
-                        loss_plus = np.mean(np.sum(error_plus**2, axis=1))
-                        
-                        gradient[i, j] = (loss_plus - loss) / eps
-                
-                # 更新权重
-                chunk_weights -= learning_rate * gradient
-                chunk_weights = np.maximum(chunk_weights, 0)
-                chunk_weights = chunk_weights / (np.sum(chunk_weights, axis=1, keepdims=True) + 1e-8)
-                
-                optimized_weights[chunk_indices] = chunk_weights
-                
-                # 计算损失
-                predicted = self.apply_lbs_transform(chunk_rest, chunk_weights, relative_transforms)
-                chunk_loss = np.mean(np.sum((predicted - chunk_target)**2, axis=1))
-                total_loss += chunk_loss * len(chunk_weights) / num_vertices
+                chunk_data_list.append((chunk_indices, chunk_rest, chunk_target, chunk_weights))
             
-            if iteration % 10 == 0:
-                print(f"  采样优化迭代 {iteration}: 损失 = {total_loss:.6f}")
+            # 多线程并行优化
+            with ThreadPoolExecutor(max_workers=num_threads) as executor:
+                # 提交所有任务
+                future_to_chunk = {executor.submit(optimize_chunk, chunk_data): chunk_data 
+                                 for chunk_data in chunk_data_list}
+                
+                # 收集结果
+                for future in as_completed(future_to_chunk):
+                    chunk_indices, chunk_weights, chunk_loss = future.result()
+                    optimized_weights[chunk_indices] = chunk_weights
+                    total_loss += chunk_loss * len(chunk_weights) / num_vertices
+            
+            # 进度报告
+            if iteration % 5 == 0:  # 更频繁的进度报告
+                elapsed = time.time() - start_time
+                print(f"  🚀 迭代 {iteration}: 损失 = {total_loss:.6f}, 耗时 = {elapsed:.2f}s")
+        
+        total_time = time.time() - start_time
+        print(f"✅ 优化完成，总耗时: {total_time:.2f}s")
         
         return optimized_weights
     
@@ -528,8 +608,27 @@ class AutoSkinning:
                 print(f"  标准优化迭代 {iteration}: 损失 = {total_loss:.6f}")
         
         return optimized_weights
+
+    def calc_optimize_frames(self, start_frame_idx, end_frame_idx, step):
+        """
+        计算优化帧
+        """
+        total_frames = len(self.mesh_files)
+        if start_frame_idx is None:
+            start_frame_idx = 0
+        if end_frame_idx is None:
+            end_frame_idx = total_frames
+        if step is None:
+            step = 2
+        optimization_frames = list(range(start_frame_idx, end_frame_idx, step))
+        
+        # 移除reference frame
+        if self.reference_frame_idx in optimization_frames:
+            optimization_frames.remove(self.reference_frame_idx)
+
+        return optimization_frames
     
-    def optimize_reference_frame_skinning(self, regularization_lambda=0.01, max_iter=1000):
+    def optimize_reference_frame_skinning(self, optimization_frames=None, regularization_lambda=0.01, max_iter=1000):
         """
         优化reference frame的skinning权重
         
@@ -551,22 +650,9 @@ class AutoSkinning:
         all_losses = []
         
         # 选择几个代表性帧进行优化
-        optimization_frames = []
-        total_frames = len(self.mesh_files)
-        
-        # 选择策略：均匀采样 + 包含首尾帧
-        if total_frames <= 10:
-            optimization_frames = list(range(total_frames))
-        else:
-            # 均匀采样50帧
-            step = total_frames // 1
-            optimization_frames = list(range(0, total_frames, step))
-            if optimization_frames[-1] != total_frames - 1:
-                optimization_frames.append(total_frames - 1)
-        
-        # 移除reference frame
-        if self.reference_frame_idx in optimization_frames:
-            optimization_frames.remove(self.reference_frame_idx)
+        if optimization_frames is None:
+            optimization_frames = self.calc_optimize_frames(None, None, None)
+
         
         print(f"将使用 {len(optimization_frames)} 帧进行权重优化: {optimization_frames}")
         
@@ -1037,7 +1123,7 @@ class AutoSkinning:
             print(f"加载skinning权重失败: {e}")
             return False
 
-def run_auto_skinning_pipeline():
+def run_auto_skinning_pipeline(reference_frame_idx = 5):
     """
     自动蒙皮计算和可视化pipeline
     """
@@ -1047,12 +1133,12 @@ def run_auto_skinning_pipeline():
     # 配置路径
     skeleton_data_dir = "output/skeleton_prediction"
     mesh_folder_path = "D:/Code/VVEditor/Rafa_Approves_hd_4k"
-    weights_output_path = "output/skinning_weights_auto.npz"
+    weights_output_path = f"output/skinning_weights_{reference_frame_idx}.npz"
     
     # 初始化
     skinner = AutoSkinning(
         skeleton_data_dir=skeleton_data_dir,
-        reference_frame_idx=5  # 使用第5帧作为参考
+        reference_frame_idx=reference_frame_idx  # 使用第5帧作为参考
     )
     
     # 加载数据
@@ -1070,8 +1156,12 @@ def run_auto_skinning_pipeline():
     if not os.path.exists(weights_output_path):        
         # 优化蒙皮权重
         print("\n🔧 开始优化蒙皮权重...")
+
+        optimization_frames = skinner.calc_optimize_frames(reference_frame_idx - 10, reference_frame_idx + 10, 2)
+
         skinner.skinning_weights = skinner.optimize_reference_frame_skinning(
             regularization_lambda=0.01,
+            optimization_frames=optimization_frames,
             max_iter=100  # 适中的迭代次数
         )
         
@@ -1186,8 +1276,11 @@ def main():
     """
     主函数 - 运行完整的自动蒙皮pipeline
     """
-    run_auto_skinning_pipeline()
-
+    args = sys.argv[1:]
+    reference_frame_idx = 5
+    if len(args) >= 1:
+        reference_frame_idx = int(args[0])
+    run_auto_skinning_pipeline(reference_frame_idx)
 
 if __name__ == "__main__":
     main()

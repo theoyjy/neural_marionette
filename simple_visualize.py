@@ -30,7 +30,7 @@ def quick_visualize_frame(frame_idx=10):
     # 配置路径
     skeleton_data_dir = "output/skeleton_prediction"
     mesh_folder_path = "D:/Code/VVEditor/Rafa_Approves_hd_4k"
-    weights_path = "output/skinning_weights_auto.npz"  # 使用正确的权重文件名
+    weights_path = f"output/skinning_weights_{reference_frame}.npz"  # 使用正确的权重文件名
     reference_frame = 5
     
     print("正在初始化...")
