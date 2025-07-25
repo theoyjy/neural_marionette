@@ -9,6 +9,9 @@ import glob
 from pathlib import Path
 from SkelVisualizer import visualize_skeleton
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 class SequenceSkeletonPredictor:
     def __init__(self, checkpoint_path, opt_path):
@@ -19,6 +22,8 @@ class SequenceSkeletonPredictor:
             checkpoint_path: 预训练模型路径
             opt_path: 配置文件路径
         """
+        start_time = time.time()
+        
         # 加载配置
         with open(opt_path, 'rb') as f:
             self.opt = pickle.load(f)
@@ -30,37 +35,24 @@ class SequenceSkeletonPredictor:
         self.network.eval()
         self.network.anneal(1)  # 启用affinity提取
         
-        print(f"模型加载成功，关键点数量: {self.opt.nkeypoints}")
+        model_load_time = time.time() - start_time
+        print(f"✅ 模型加载成功，关键点数量: {self.opt.nkeypoints}")
+        print(f"⏱️  模型加载耗时: {model_load_time:.2f}秒")
     
-    def load_mesh_sequence(self, mesh_folder, file_pattern="*.obj", max_frames=None):
+    def process_single_mesh(self, mesh_file, frame_idx, total_frames):
         """
-        加载网格序列并转换为体素
+        处理单个网格文件（用于多线程）
         
         Args:
-            mesh_folder: 包含网格文件的文件夹路径
-            file_pattern: 文件匹配模式，如 "*.obj", "frame_*.ply"
-            max_frames: 最大帧数限制
-        
+            mesh_file: 网格文件路径
+            frame_idx: 帧索引
+            total_frames: 总帧数
+            
         Returns:
-            voxel_sequence: (T, grid_size, grid_size, grid_size)
-            mesh_sequence: 原始网格数据列表
+            dict: 包含处理结果的字典
         """
-        mesh_files = sorted(glob.glob(os.path.join(mesh_folder, file_pattern)))
-        
-        if max_frames:
-            mesh_files = mesh_files[:max_frames]
-        
-        if len(mesh_files) == 0:
-            raise ValueError(f"在 {mesh_folder} 中未找到匹配 {file_pattern} 的文件")
-        
-        print(f"找到 {len(mesh_files)} 个网格文件")
-        
-        voxel_sequence = []
-        mesh_sequence = []
-        points_sequence = []
-        
-        for i, mesh_file in enumerate(mesh_files):
-            print(f"处理第 {i+1}/{len(mesh_files)} 个文件: {os.path.basename(mesh_file)}")
+        try:
+            print(f"🔄 处理第 {frame_idx+1}/{total_frames} 个文件: {os.path.basename(mesh_file)}")
             
             # 加载网格
             if mesh_file.endswith('.obj') or mesh_file.endswith('.ply'):
@@ -72,28 +64,112 @@ class SequenceSkeletonPredictor:
             
             if 'mesh' in locals() and len(mesh.vertices) > 0:
                 points = np.asarray(mesh.vertices)
-                mesh_sequence.append(mesh)
+                mesh_data = mesh
             elif 'pcd' in locals() and len(pcd.points) > 0:
                 points = np.asarray(pcd.points)
-                mesh_sequence.append(pcd)
+                mesh_data = pcd
             else:
                 raise ValueError(f"无法加载文件: {mesh_file}")
             
             # 归一化点云（模仿原代码的处理方式）
             points_norm = episodic_normalization(points[None], scale=1.0, x_trans=0.0, z_trans=0.0)[0]
-            points_sequence.append(points_norm)
             
             # 体素化
             try:
                 voxel = voxelize(points_norm, (self.opt.grid_size,) * 3, is_binarized=True)
-                voxel_sequence.append(voxel)
             except Exception as e:
-                print(f"体素化失败: {e}")
+                print(f"❌ 体素化失败: {e}")
                 raise
+            
+            return {
+                'frame_idx': frame_idx,
+                'mesh': mesh_data,
+                'points_norm': points_norm,
+                'voxel': voxel,
+                'success': True
+            }
+            
+        except Exception as e:
+            print(f"❌ 处理文件失败 {mesh_file}: {e}")
+            return {
+                'frame_idx': frame_idx,
+                'mesh': None,
+                'points_norm': None,
+                'voxel': None,
+                'success': False,
+                'error': str(e)
+            }
+    
+    def load_mesh_sequence(self, mesh_folder, file_pattern="*.obj", max_frames=None):
+        """
+        加载网格序列并转换为体素（多线程版本）
+        
+        Args:
+            mesh_folder: 包含网格文件的文件夹路径
+            file_pattern: 文件匹配模式，如 "*.obj", "frame_*.ply"
+            max_frames: 最大帧数限制
+        
+        Returns:
+            voxel_sequence: (T, grid_size, grid_size, grid_size)
+            mesh_sequence: 原始网格数据列表
+        """
+        start_time = time.time()
+        
+        mesh_files = sorted(glob.glob(os.path.join(mesh_folder, file_pattern)))
+        
+        if max_frames:
+            mesh_files = mesh_files[:max_frames]
+        
+        if len(mesh_files) == 0:
+            raise ValueError(f"在 {mesh_folder} 中未找到匹配 {file_pattern} 的文件")
+        
+        print(f"📁 找到 {len(mesh_files)} 个网格文件")
+        print(f"🔄 开始多线程处理...")
+        
+        # 多线程处理
+        max_workers = min(8, len(mesh_files))  # 限制最大线程数
+        print(f"  - 使用 {max_workers} 个线程")
+        
+        voxel_sequence = []
+        mesh_sequence = []
+        points_sequence = []
+        
+        # 用于存储结果的列表（按帧索引排序）
+        results = [None] * len(mesh_files)
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_idx = {
+                executor.submit(self.process_single_mesh, mesh_file, i, len(mesh_files)): i 
+                for i, mesh_file in enumerate(mesh_files)
+            }
+            
+            # 收集结果
+            for future in as_completed(future_to_idx):
+                result = future.result()
+                if result['success']:
+                    results[result['frame_idx']] = result
+                    print(f"✅ 完成第 {result['frame_idx']+1}/{len(mesh_files)} 个文件")
+                else:
+                    print(f"❌ 第 {result['frame_idx']+1} 个文件处理失败: {result.get('error', '未知错误')}")
+        
+        # 按顺序整理结果
+        for i, result in enumerate(results):
+            if result is None or not result['success']:
+                raise ValueError(f"第 {i+1} 个文件处理失败")
+            
+            mesh_sequence.append(result['mesh'])
+            points_sequence.append(result['points_norm'])
+            voxel_sequence.append(result['voxel'])
         
         # 转换为torch tensor
         voxel_sequence = torch.from_numpy(np.stack(voxel_sequence, axis=0)).float().cuda()
-        print(f"体素序列形状: {voxel_sequence.shape}")
+        
+        processing_time = time.time() - start_time
+        print(f"✅ 多线程处理完成！")
+        print(f"  - 体素序列形状: {voxel_sequence.shape}")
+        print(f"  - 处理耗时: {processing_time:.2f}秒")
+        print(f"  - 平均每帧: {processing_time/len(mesh_files):.3f}秒")
         
         return voxel_sequence, mesh_sequence, points_sequence
 
@@ -110,6 +186,10 @@ class SequenceSkeletonPredictor:
             affinity: 骨骼连接关系
             parents: 父子关系
         """
+        start_time = time.time()
+        print(f"🧠 开始神经网络预测...")
+        print(f"  - 输入形状: {voxel_sequence.shape}")
+        
         with torch.no_grad():
             # 一次性处理整个序列
             detector_log = self.network.kypt_detector(voxel_sequence[None])  # 添加batch维度
@@ -134,6 +214,12 @@ class SequenceSkeletonPredictor:
             homo = torch.tensor([0.0, 0.0, 0.0, 1.0]).to(R.device)[None, None, None].expand(
                 R.size(0), R.size(1), -1, -1)
             T4x4 = torch.cat([T4x4, homo], dim=-2)  # (T, K, 4, 4)
+            
+            prediction_time = time.time() - start_time
+            print(f"✅ 神经网络预测完成！")
+            print(f"  - 预测耗时: {prediction_time:.2f}秒")
+            print(f"  - 关键点形状: {keypoints.shape}")
+            print(f"  - 变换矩阵形状: {T4x4.shape}")
             
             return {
                 'keypoints': keypoints,
@@ -248,22 +334,37 @@ class SequenceSkeletonPredictor:
         print(f"可视化完成，共处理 {keypoints.shape[0]} 帧")
 
 def main():
+    """主函数"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="骨骼序列预测")
+    parser.add_argument("--mesh_folder", type=str, default="D:/Code/VVEditor/Rafa_Approves_hd_4k", 
+                       help="输入网格文件夹路径")
+    parser.add_argument("--output_dir", type=str, default="output/skeleton_prediction", 
+                       help="输出目录")
+    parser.add_argument("--max_frames", type=int, default=160, 
+                       help="最大处理帧数")
+    parser.add_argument("--visualization", action="store_true", 
+                       help="启用可视化")
+    
+    args = parser.parse_args()
+    
     # 配置路径
     exp_dir = 'pretrained/aist'
     checkpoint_path = os.path.join(exp_dir, 'aist_pretrained.pth')
     opt_path = os.path.join(exp_dir, 'opt.pickle')
     
     # 输入序列文件夹
-    mesh_folder = 'D:/Code/VVEditor/Rafa_Approves_hd_4k'
-    skel_data_dir = 'output/skeleton_prediction'
-    visualize_dir = 'output/skeleton_visualization'
+    mesh_folder = args.mesh_folder
+    skel_data_dir = args.output_dir
+    visualize_dir = os.path.join(args.output_dir, 'visualization')
 
     # 创建预测器
     predictor = SequenceSkeletonPredictor(checkpoint_path, opt_path)
     
     # 加载网格序列
     voxel_sequence, mesh_sequence, points_sequence = predictor.load_mesh_sequence(
-        mesh_folder, file_pattern="*.obj", max_frames=160  # 限制最大帧数
+        mesh_folder, file_pattern="*.obj", max_frames=args.max_frames
     )
     
     # 预测骨骼
@@ -274,7 +375,9 @@ def main():
     # 保存结果
     predictor.save_skeleton_results(results, skel_data_dir, points_sequence)
 
-    visualize_skeleton(skel_data_dir, visualize_dir)
+    if args.visualization:
+        from SkelVisualizer import visualize_skeleton
+        visualize_skeleton(skel_data_dir, visualize_dir)
 
     print("处理完成!")
 
