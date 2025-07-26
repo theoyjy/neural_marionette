@@ -93,47 +93,17 @@ class VolumetricInterpolator:
             print(f"⚠️  警告: 网格文件数 ({len(self.mesh_files)}) 与骨骼帧数 ({self.num_frames}) 不匹配")
     
     def load_skinning_weights(self, weights_path):
-        """加载预计算的蒙皮权重"""
+        """加载蒙皮权重"""
         try:
             data = np.load(weights_path)
             self.skinning_weights = data['weights']
-            self.rest_pose_vertices = data['rest_vertices']
-            self.rest_pose_transforms = data['rest_transforms']
-            self.reference_frame_idx = data['reference_frame_idx'].item()
-            
             print(f"✅ 成功加载蒙皮权重:")
             print(f"  - 权重矩阵形状: {self.skinning_weights.shape}")
-            print(f"  - 参考帧: {self.reference_frame_idx}")
-            
             return True
         except Exception as e:
-            print(f"⚠️  加载蒙皮权重失败: {e}")
+            print(f"❌ 加载蒙皮权重失败: {e}")
             return False
-    
-    def check_and_optimize_weights(self, frame_start, frame_end, num_interpolate):
-        """
-        检查权重文件的reference_frame_idx是否等于start_idx，如果不是则调用Skinning.py重新优化权重
-        
-        Args:
-            frame_start: 起始帧索引
-            frame_end: 结束帧索引
-            num_interpolate: 插值帧数
-            
-        Returns:
-            bool: 是否需要重新优化权重
-        """
-        if self.skinning_weights is None:
-            print("🔧 没有预加载权重，需要重新优化")
-            return True
-        
-        if self.reference_frame_idx != frame_start:
-            print(f"🔧 权重文件的参考帧 ({self.reference_frame_idx}) 与起始帧 ({frame_start}) 不匹配")
-            print("   将调用Skinning.py重新优化权重...")
-            return True
-        
-        print(f"✅ 权重文件参考帧 ({self.reference_frame_idx}) 与起始帧 ({frame_start}) 匹配")
-        return False
-    
+
     def optimize_weights_using_skinning(self, frame_start, frame_end, max_optimize_frames=5):
         """
         使用Skinning.py优化权重
@@ -338,23 +308,6 @@ class VolumetricInterpolator:
         aligned_vertices = mesh_vertices + offset
         
         return aligned_vertices
-    
-    def compute_lbs_loss(self, weights_flat, rest_vertices, target_vertices, transforms, 
-                        regularization_lambda=0.01):
-        """计算LBS损失函数"""
-        num_vertices = rest_vertices.shape[0]
-        num_joints = transforms.shape[0]
-        
-        weights = weights_flat.reshape(num_vertices, num_joints)
-        weights = np.maximum(weights, 0)
-        weights = weights / (np.sum(weights, axis=1, keepdims=True) + 1e-8)
-        
-        predicted_vertices = self.apply_lbs_transform(rest_vertices, weights, transforms)
-        reconstruction_loss = np.mean(np.sum((predicted_vertices - target_vertices)**2, axis=1))
-        sparsity_loss = np.mean(np.sum(weights**2, axis=1))
-        
-        total_loss = reconstruction_loss + regularization_lambda * sparsity_loss
-        return total_loss
     
     def interpolate_skeleton_transforms(self, frame_start, frame_end, t):
         """
@@ -768,282 +721,6 @@ class VolumetricInterpolator:
         
         return denormalized
     
-    def visualize_interpolation(self, frame_start, frame_end, num_interpolate, 
-                              output_dir=None, save_animation=True, max_optimize_frames = 10,
-                              interpolated_frames=None):
-        """
-        可视化插值结果
-        
-        Args:
-            frame_start: 起始帧索引
-            frame_end: 结束帧索引
-            num_interpolate: 插值帧数
-            output_dir: 输出目录
-            save_animation: 是否保存动画
-            max_optimize_frames: 最大优化帧数
-            interpolated_frames: 已生成的插值帧列表（如果为None则重新生成）
-        """
-        print(f"🎨 可视化插值结果...")
-        
-        # 如果没有提供插值帧，则重新生成
-        if interpolated_frames is None:
-            interpolated_frames = self.generate_interpolated_frames(
-                frame_start, frame_end, num_interpolate, 
-                max_optimize_frames=max_optimize_frames,
-                optimize_weights=True, output_dir=output_dir
-            )
-        
-        if not interpolated_frames:
-            print("❌ 没有生成插值帧")
-            return
-        
-        # 创建可视化
-        vis = o3d.visualization.Visualizer()
-        vis.create_window(width=1200, height=800, visible=not save_animation)
-        
-        # 加载原始帧进行对比
-        original_start_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_start]))
-        original_end_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_end]))
-        
-        # 设置颜色
-        original_start_mesh.paint_uniform_color([1, 0, 0])  # 红色 - 起始帧
-        original_end_mesh.paint_uniform_color([0, 0, 1])    # 蓝色 - 结束帧
-        
-        # 添加原始帧
-        vis.add_geometry(original_start_mesh)
-        vis.add_geometry(original_end_mesh)
-        
-        # 为插值帧设置颜色
-        for i, frame_data in enumerate(interpolated_frames):
-            mesh = frame_data['mesh']
-            # 使用绿色到黄色的渐变
-            color_ratio = i / len(interpolated_frames)
-            color = [color_ratio, 1 - color_ratio * 0.5, 0]
-            mesh.paint_uniform_color(color)
-            vis.add_geometry(mesh)
-        
-        # 设置视角
-        vis.get_render_option().point_size = 1.0
-        vis.get_render_option().line_width = 2.0
-        
-        if save_animation and output_dir:
-            output_path = Path(output_dir)
-            frames_dir = output_path / "animation_frames"
-            frames_dir.mkdir(exist_ok=True)
-            
-            # 保存动画帧
-            for i in range(len(interpolated_frames) + 2):  # +2 for start and end frames
-                vis.poll_events()
-                vis.update_renderer()
-                
-                # 保存截图
-                img = vis.capture_screen_float_buffer(True)
-                img = (np.asarray(img) * 255).astype(np.uint8)
-                o3d.io.write_image(str(frames_dir / f"frame_{i:04d}.png"), 
-                                 o3d.geometry.Image(img))
-            
-            print(f"📹 动画帧已保存到: {frames_dir}")
-        else:
-            # 交互式显示
-            vis.run()
-        
-        vis.destroy_window()
-        
-        print(f"✅ 可视化完成")
-    
-    def export_interpolation_sequence(self, frame_start, frame_end, num_interpolate, 
-                                    output_dir, format='obj', max_optimize_frames = 10,
-                                    interpolated_frames=None):
-        """
-        导出插值序列
-        
-        Args:
-            frame_start: 起始帧索引
-            frame_end: 结束帧索引
-            num_interpolate: 插值帧数
-            output_dir: 输出目录
-            format: 输出格式 ('obj', 'ply', 'stl')
-            max_optimize_frames: 最大优化帧数
-            interpolated_frames: 已生成的插值帧列表（如果为None则重新生成）
-        """
-        print(f"📦 导出插值序列...")
-        
-        # 如果没有提供插值帧，则重新生成
-        if interpolated_frames is None:
-            interpolated_frames = self.generate_interpolated_frames(
-                frame_start, frame_end, num_interpolate, 
-                max_optimize_frames=max_optimize_frames,
-                optimize_weights=True, output_dir=None
-            )
-        
-        if not interpolated_frames:
-            print("❌ 没有生成插值帧")
-            return
-        
-        # 创建输出目录
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        # 导出序列
-        total_frames = len(interpolated_frames) + 2  # 包括起始和结束帧
-        
-        # 导出起始帧
-        start_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_start]))
-        start_output_path = output_path / f"frame_{0:06d}.{format}"
-        if format == 'obj':
-            o3d.io.write_triangle_mesh(str(start_output_path), start_mesh)
-        elif format == 'ply':
-            o3d.io.write_triangle_mesh(str(start_output_path), start_mesh, write_ascii=False)
-        elif format == 'stl':
-            o3d.io.write_triangle_mesh(str(start_output_path), start_mesh)
-        
-        # 导出插值帧
-        for i, frame_data in enumerate(interpolated_frames):
-            mesh = frame_data['mesh']
-            frame_idx = i + 1
-            output_file = output_path / f"frame_{frame_idx:06d}.{format}"
-            
-            if format == 'obj':
-                o3d.io.write_triangle_mesh(str(output_file), mesh)
-            elif format == 'ply':
-                o3d.io.write_triangle_mesh(str(output_file), mesh, write_ascii=False)
-            elif format == 'stl':
-                o3d.io.write_triangle_mesh(str(output_file), mesh)
-        
-        # 导出结束帧
-        end_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_end]))
-        end_output_path = output_path / f"frame_{total_frames-1:06d}.{format}"
-        if format == 'obj':
-            o3d.io.write_triangle_mesh(str(end_output_path), end_mesh)
-        elif format == 'ply':
-            o3d.io.write_triangle_mesh(str(end_output_path), end_mesh, write_ascii=False)
-        elif format == 'stl':
-            o3d.io.write_triangle_mesh(str(end_output_path), end_mesh)
-        
-        # 保存元数据
-        metadata = {
-            'frame_start': frame_start,
-            'frame_end': frame_end,
-            'num_interpolate': num_interpolate,
-            'total_frames': total_frames,
-            'format': format,
-            'skeleton_data_dir': str(self.skeleton_data_dir),
-            'mesh_folder_path': str(self.mesh_folder_path),
-            'interpolation_method': 'skeleton_slerp_lbs',
-            'optimization_frames': list(range(frame_start, frame_end + 1))
-        }
-        
-        metadata_path = output_path / "interpolation_metadata.json"
-        with open(metadata_path, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, indent=2, ensure_ascii=False)
-        
-        print(f"✅ 插值序列导出完成:")
-        print(f"  - 输出目录: {output_path}")
-        print(f"  - 总帧数: {total_frames}")
-        print(f"  - 格式: {format}")
-        print(f"  - 元数据: {metadata_path}")
-
-    def validate_interpolation_quality(self, frame_start, frame_end, interpolated_frames):
-        """
-        验证插值质量
-        
-        Args:
-            frame_start: 起始帧索引
-            frame_end: 结束帧索引
-            interpolated_frames: 插值帧列表
-            
-        Returns:
-            quality_metrics: 质量指标字典
-        """
-        print(f"🔍 验证插值质量...")
-        
-        quality_metrics = {}
-        
-        # 加载原始帧
-        original_start_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_start]))
-        original_end_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_end]))
-        
-        original_start_vertices = np.asarray(original_start_mesh.vertices)
-        original_end_vertices = np.asarray(original_end_mesh.vertices)
-        
-        # 计算原始帧的体积
-        start_bbox_min = np.min(original_start_vertices, axis=0)
-        start_bbox_max = np.max(original_start_vertices, axis=0)
-        start_volume = np.prod(start_bbox_max - start_bbox_min)
-        
-        end_bbox_min = np.min(original_end_vertices, axis=0)
-        end_bbox_max = np.max(original_end_vertices, axis=0)
-        end_volume = np.prod(end_bbox_max - end_bbox_min)
-        
-        quality_metrics['original_volumes'] = {
-            'start_frame': start_volume,
-            'end_frame': end_volume,
-            'volume_ratio': end_volume / (start_volume + 1e-8)
-        }
-        
-        # 检查插值帧的体积变化
-        interpolated_volumes = []
-        for i, frame_data in enumerate(interpolated_frames):
-            vertices = frame_data['vertices']
-            bbox_min = np.min(vertices, axis=0)
-            bbox_max = np.max(vertices, axis=0)
-            volume = np.prod(bbox_max - bbox_min)
-            interpolated_volumes.append(volume)
-        
-        quality_metrics['interpolated_volumes'] = interpolated_volumes
-        quality_metrics['volume_stability'] = {
-            'min_volume': min(interpolated_volumes),
-            'max_volume': max(interpolated_volumes),
-            'volume_variance': np.var(interpolated_volumes)
-        }
-        
-        # 检查网格连续性
-        continuity_scores = []
-        for i in range(len(interpolated_frames) - 1):
-            vertices_curr = interpolated_frames[i]['vertices']
-            vertices_next = interpolated_frames[i + 1]['vertices']
-            
-            # 计算相邻帧之间的平均顶点位移
-            min_vertices = min(len(vertices_curr), len(vertices_next))
-            displacement = np.mean(np.linalg.norm(vertices_curr[:min_vertices] - vertices_next[:min_vertices], axis=1))
-            continuity_scores.append(displacement)
-        
-        quality_metrics['continuity'] = {
-            'mean_displacement': np.mean(continuity_scores),
-            'max_displacement': np.max(continuity_scores),
-            'displacement_variance': np.var(continuity_scores)
-        }
-        
-        # 检查骨骼姿态的自然性
-        pose_scores = []
-        for frame_data in interpolated_frames:
-            transforms = frame_data['transforms']
-            
-            # 检查骨骼长度的一致性
-            bone_lengths = []
-            for j in range(1, self.num_joints):  # 跳过根节点
-                parent_idx = self.parents[j]
-                bone_length = np.linalg.norm(transforms[j][:3, 3] - transforms[parent_idx][:3, 3])
-                bone_lengths.append(bone_length)
-            
-            # 计算骨骼长度的方差（越小越自然）
-            bone_length_variance = np.var(bone_lengths)
-            pose_scores.append(bone_length_variance)
-        
-        quality_metrics['pose_naturality'] = {
-            'mean_bone_length_variance': np.mean(pose_scores),
-            'max_bone_length_variance': np.max(pose_scores)
-        }
-        
-        # 打印质量报告
-        print(f"📊 插值质量报告:")
-        print(f"  - 原始体积比: {quality_metrics['original_volumes']['volume_ratio']:.3f}")
-        print(f"  - 插值体积稳定性: {quality_metrics['volume_stability']['volume_variance']:.6f}")
-        print(f"  - 平均顶点位移: {quality_metrics['continuity']['mean_displacement']:.6f}")
-        print(f"  - 姿态自然性: {quality_metrics['pose_naturality']['mean_bone_length_variance']:.6f}")
-        
-        return quality_metrics
-
     def visualize_skeleton_with_mesh(self, frame_data, output_path=None, frame_idx=None):
         """
         可视化单个插值帧的骨骼和网格
@@ -1149,162 +826,50 @@ class VolumetricInterpolator:
             
             vis.destroy_window()
             
+            print(f"✅ 可视化完成")
+            
         except Exception as e:
             print(f"❌ 骨骼可视化失败: {e}")
             import traceback
             traceback.print_exc()
-    
-    def debug_interpolation_frame(self, frame_data, frame_idx, output_dir):
-        """
-        调试单个插值帧
-        
-        Args:
-            frame_data: 插值帧数据
-            frame_idx: 帧索引
-            output_dir: 输出目录
-        """
-        print(f"\n🔍 调试插值帧 {frame_idx}...")
-        
-        # 分析网格
-        mesh = frame_data['mesh']
-        vertices = np.asarray(mesh.vertices)
-        
-        print(f"  网格统计:")
-        print(f"    - 顶点数: {len(vertices)}")
-        print(f"    - 边界框: {np.min(vertices, axis=0)} -> {np.max(vertices, axis=0)}")
-        print(f"    - 体积: {np.prod(np.max(vertices, axis=0) - np.min(vertices, axis=0)):.6f}")
-        
-        # 分析骨骼
-        transforms = frame_data['transforms']
-        keypoints = frame_data['keypoints']
-        
-        print(f"  骨骼统计:")
-        for j in range(min(5, self.num_joints)):  # 只显示前5个关节
-            joint_pos = transforms[j][:3, 3]
-            confidence = keypoints[j, 3]
-            print(f"    - 关节 {j}: 位置={joint_pos}, 置信度={confidence:.3f}")
-        
-        # 检查骨骼长度
-        print(f"  骨骼长度检查:")
-        for j in range(1, min(5, self.num_joints)):
-            parent_idx = self.parents[j]
-            if parent_idx >= 0:
-                bone_length = np.linalg.norm(
-                    transforms[j][:3, 3] - transforms[parent_idx][:3, 3]
-                )
-                print(f"    - 骨骼 {parent_idx}->{j}: 长度={bone_length:.6f}")
-        
-        # 可视化
-        output_path = Path(output_dir) / f"debug_frame_{frame_idx:04d}.png"
-        self.visualize_skeleton_with_mesh(frame_data, str(output_path), frame_idx)
-        
-        return {
-            'frame_idx': frame_idx,
-            'mesh_vertices': len(vertices),
-            'mesh_bbox': (np.min(vertices, axis=0), np.max(vertices, axis=0)),
-            'mesh_volume': np.prod(np.max(vertices, axis=0) - np.min(vertices, axis=0)),
-            'joint_positions': transforms[:, :3, 3],
-            'joint_confidences': keypoints[:, 3]
-        }
 
 def main():
-    """
-    主函数 - 演示插值功能
-    """
-    print("🎬 体素视频插值系统")
-    print("=" * 50)
-    
+    """主函数 - 用于测试"""
     # 配置路径
     skeleton_data_dir = "output/skeleton_prediction"
     mesh_folder_path = "D:/Code/VVEditor/Rafa_Approves_hd_4k"
-    weights_path = "output/skinning_weights_auto.npz"
-    output_dir = "output/interpolation_results"
-    
-    # 检查数据是否存在
-    if not os.path.exists(skeleton_data_dir):
-        print(f"❌ 骨骼数据目录不存在: {skeleton_data_dir}")
-        print("请先运行 SkelSequencePrediction.py 生成骨骼数据")
-        return
-    
-    if not os.path.exists(mesh_folder_path):
-        print(f"❌ 网格文件夹不存在: {mesh_folder_path}")
-        return
     
     # 初始化插值器
-    print("🔧 初始化插值器...")
     interpolator = VolumetricInterpolator(
         skeleton_data_dir=skeleton_data_dir,
         mesh_folder_path=mesh_folder_path,
-        weights_path=weights_path if os.path.exists(weights_path) else None
+        weights_path=None
     )
     
-    # 设置插值参数
+    # 测试参数
     frame_start = 10
     frame_end = 20
-    num_interpolate = 10
-    max_optimize_frames = 10
+    num_interpolate = 5
     
-    print(f"📋 插值参数:")
+    print(f"🧪 测试插值功能...")
     print(f"  - 起始帧: {frame_start}")
     print(f"  - 结束帧: {frame_end}")
     print(f"  - 插值帧数: {num_interpolate}")
     
-    # 执行插值
-    try:
-        # 生成插值帧（只调用一次）
-        print("\n🎬 开始生成插值帧...")
-        interpolated_frames = interpolator.generate_interpolated_frames(
-            frame_start=frame_start,
-            frame_end=frame_end,
-            num_interpolate=num_interpolate,
-            max_optimize_frames=max_optimize_frames,
-            optimize_weights=True, 
-            output_dir=output_dir
-        )
-        
-        if not interpolated_frames:
-            print("❌ 没有生成插值帧")
-            return
-        
-        # 验证插值质量
-        print("\n🔍 验证插值质量...")
-        quality_metrics = interpolator.validate_interpolation_quality(
-            frame_start=frame_start,
-            frame_end=frame_end,
-            interpolated_frames=interpolated_frames
-        )
-        
-        # 导出插值序列（使用已生成的帧）
-        print("\n📦 导出插值序列...")
-        interpolator.export_interpolation_sequence(
-            frame_start=frame_start,
-            frame_end=frame_end,
-            num_interpolate=num_interpolate,
-            max_optimize_frames=max_optimize_frames,
-            output_dir=output_dir,
-            format='obj',
-            interpolated_frames=interpolated_frames
-        )
-        
-        # 可视化插值结果（使用已生成的帧）
-        print("\n🎨 可视化插值结果...")
-        interpolator.visualize_interpolation(
-            frame_start=frame_start,
-            frame_end=frame_end,
-            num_interpolate=num_interpolate,
-            max_optimize_frames=max_optimize_frames,
-            output_dir=output_dir,
-            save_animation=True,
-            interpolated_frames=interpolated_frames
-        )
-        
-        print(f"\n🎉 插值完成！")
-        print(f"📁 结果保存在: {output_dir}")
-        
-    except Exception as e:
-        print(f"❌ 插值过程中出现错误: {e}")
-        import traceback
-        traceback.print_exc()
+    # 生成插值帧
+    interpolated_frames = interpolator.generate_interpolated_frames(
+        frame_start=frame_start,
+        frame_end=frame_end,
+        num_interpolate=num_interpolate,
+        max_optimize_frames=5,
+        optimize_weights=True,
+        output_dir="output/test_interpolation"
+    )
+    
+    if interpolated_frames:
+        print(f"✅ 插值测试成功！生成了 {len(interpolated_frames)} 个插值帧")
+    else:
+        print(f"❌ 插值测试失败！")
 
 if __name__ == "__main__":
     main()
