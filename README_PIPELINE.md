@@ -41,7 +41,7 @@ output/
     │   ├── parents.npy
     │   └── ...
     ├── skinning_weights/            # 蒙皮权重文件
-    │   ├── skinning_weights_ref10_opt10-20_step1.npz
+    │   ├── ref10_opt10-20_step1.npz
     │   └── ...
     └── interpolation_results/        # 插值结果
         ├── interpolated_frame_0000.obj
@@ -80,11 +80,11 @@ output/
 
 ### 蒙皮权重文件
 ```
-skinning_weights_ref{reference_frame}_opt{start}-{end}_step{step}.npz
+ref{reference_frame}_opt{start}-{end}_step{step}.npz
 ```
 
 示例：
-- `skinning_weights_ref10_opt10-20_step1.npz`: 参考帧10，优化帧10-20，步长1
+- `ref10_opt10-20_step1.npz`: 参考帧10，优化帧10-20，步长1
 
 ### 插值结果文件
 ```

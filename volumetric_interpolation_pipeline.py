@@ -4,11 +4,16 @@ Volumetric Video Interpolation Pipeline
 
 完整的体素视频插值流水线，包括：
 1. 骨骼预测 (SkelSequencePrediction.py)
-2. 插值生成 (Interpolate.py)
+2. 插值生成 (Interpolate.py) - 支持多种插值方法
 3. 蒙皮权重优化 (Skinning.py)
 
+支持的插值方法：
+- baseline: 基础插值方法
+- dual_reference: 双参考帧插值
+- adaptive_similarity: 相似帧自适应插值
+
 使用流程：
-python volumetric_interpolation_pipeline.py <folder_path> <start_frame> <end_frame> [num_interpolate]
+python volumetric_interpolation_pipeline.py <folder_path> <start_frame> <end_frame> [num_interpolate] [--method]
 """
 
 import os
@@ -19,8 +24,7 @@ import time
 import hashlib
 
 def check_dependencies():
-    """检查依赖项"""
-    print("🔍 检查依赖项...")
+    print("Check Dependencies...")
     
     required_modules = [
         'torch', 'numpy', 'open3d', 'scipy', 'matplotlib', 
@@ -31,24 +35,24 @@ def check_dependencies():
     for module in required_modules:
         try:
             __import__(module)
-            print(f"  ✅ {module}")
+            print(f"{module}")
         except ImportError:
-            print(f"  ❌ {module} - 缺失")
+            print(f"{module} - Missing")
             missing_modules.append(module)
     
     if missing_modules:
-        print(f"\n❌ 缺少以下依赖项: {missing_modules}")
-        print("请安装缺失的依赖项后重试")
+        print(f"\nMissing Dependencies: {missing_modules}")
+        print("Please install the missing dependencies and try again")
         return False
     
-    print("✅ 所有依赖项检查通过")
+    print("All Dependencies Checked")
     return True
 
-def setup_paths(folder_path):
-    """设置输出路径"""
+def setup_paths(folder_path, method="baseline", start_frame=0, end_frame=0, num_interpolate=10):
+    """Set Output Paths"""
     folder_path = Path(folder_path)
     
-    # 创建输出目录结构
+    # create output directory structure
     output_base = Path("output")
     output_base.mkdir(exist_ok=True)
     
@@ -58,19 +62,25 @@ def setup_paths(folder_path):
     output_dir = output_base / f"pipeline_{folder_path.name}_{folder_hash}"
     output_dir.mkdir(exist_ok=True)
     
-    # 子目录
+    # 子目录 - 统一的结构
     skeleton_dir = output_dir / "skeleton_prediction"
     skinning_dir = output_dir / "skinning_weights"
-    interpolation_dir = output_dir / "interpolation_results"
     
     skeleton_dir.mkdir(exist_ok=True)
     skinning_dir.mkdir(exist_ok=True)
+    
+    # 插值结果目录 - 按方法区分
+    interpolation_root_dir = output_dir / f"interpolation_{method}"
+    interpolation_dir = interpolation_root_dir / f"{start_frame}_{end_frame}_{num_interpolate}"
+    interpolation_root_dir.mkdir(exist_ok=True)
     interpolation_dir.mkdir(exist_ok=True)
     
-    print(f"📁 输出目录设置:")
-    print(f"  - 输入文件夹: {folder_path}")
-    print(f"  - 文件夹哈希: {folder_hash}")
-    print(f"  - 输出目录: {output_dir}")
+    print(f"Output Directory:")
+    print(f"Input Folder: {folder_path}")
+    print(f"Folder Hash: {folder_hash}")
+    print(f"Interpolation Method: {method}")
+    print(f"Output Directory: {output_dir}")
+    print(f"Interpolation Results: {interpolation_dir}")
     
     return {
         'base': output_dir,
@@ -80,9 +90,9 @@ def setup_paths(folder_path):
     }
 
 def step1_skeleton_prediction(folder_path, output_paths):
-    """步骤1: 骨骼预测"""
+    """Step 1: Skeleton Prediction"""
     print("\n" + "="*60)
-    print("🎯 步骤1: 骨骼预测")
+    print("Step 1: Skeleton Prediction")
     print("="*60)
     
     step_start_time = time.time()
@@ -94,13 +104,13 @@ def step1_skeleton_prediction(folder_path, output_paths):
     parents_file = skeleton_data_path / "parents.npy"
     
     if keypoints_file.exists() and transforms_file.exists() and parents_file.exists():
-        print(f"✅ 发现已存在的骨骼数据: {skeleton_data_path}")
-        print("  跳过骨骼预测步骤")
+        print(f"Found existing skeleton data: {skeleton_data_path}")
+        print("  Skip Skeleton Prediction Step")
         return True
     
-    print(f"🔧 开始骨骼预测...")
-    print(f"  输入文件夹: {folder_path}")
-    print(f"  输出目录: {skeleton_data_path}")
+    print(f"Start Skeleton Prediction...")
+    print(f"  Input Folder: {folder_path}")
+    print(f"  Output Directory: {skeleton_data_path}")
     
     try:
         # 导入并运行骨骼预测
@@ -126,54 +136,68 @@ def step1_skeleton_prediction(folder_path, output_paths):
         sys.argv = original_argv
         
         step_time = time.time() - step_start_time
-        print(f"✅ 骨骼预测完成！")
-        print(f"  - 预测耗时: {prediction_time:.2f}秒")
-        print(f"  - 步骤总耗时: {step_time:.2f}秒")
+        print(f"Skeleton Prediction Completed!")
+        print(f"Prediction Time: {prediction_time:.2f} seconds")
+        print(f"Step Total Time: {step_time:.2f} seconds")
         
         return True
         
     except Exception as e:
-        print(f"❌ 骨骼预测失败: {e}")
+        print(f"Skeleton Prediction Failed: {e}")
         import traceback
         traceback.print_exc()
         return False
 
-def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, output_paths):
-    """步骤2: 插值生成"""
+def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, output_paths, method="baseline"):
+    """Step 2: Interpolation Generation"""
     print("\n" + "="*60)
-    print("🎯 步骤2: 插值生成")
+    print(f"Step 2: Interpolation Generation ({method})")
     print("="*60)
     
     step_start_time = time.time()
     
-    print(f"🔧 开始插值生成...")
-    print(f"  输入文件夹: {folder_path}")
-    print(f"  起始帧: {start_frame}")
-    print(f"  结束帧: {end_frame}")
-    print(f"  插值帧数: {num_interpolate}")
-    print(f"  输出目录: {output_paths['interpolation']}")
-    print(f"  权重目录: {output_paths['skinning']}")
+    print(f"Start Interpolation Generation...")
+    print(f"Input Folder: {folder_path}")
+    print(f"Start Frame: {start_frame}")
+    print(f"End Frame: {end_frame}")
+    print(f"Number of Interpolated Frames: {num_interpolate}")
+    print(f"Interpolation Method: {method}")
+    print(f"Output Directory: {output_paths['interpolation']}")
+    print(f"Weights Directory: {output_paths['skinning']}")
     
     try:
-        # 导入插值器
-        from Interpolate import VolumetricInterpolator
+        # select interpolator based on method
+        if method == "baseline":
+            from Interpolate import VolumetricInterpolator
+            interpolator = VolumetricInterpolator(
+                skeleton_data_dir=str(output_paths['skeleton']),
+                mesh_folder_path=str(folder_path),
+                weights_path=output_paths['skinning']
+            )
+        elif method == "dual_reference":
+            from Interpolate import DualReferenceInterpolator
+            interpolator = DualReferenceInterpolator(
+                skeleton_data_dir=str(output_paths['skeleton']),
+                mesh_folder_path=str(folder_path),
+                weights_path=output_paths['skinning']
+            )
+        elif method == "adaptive_similarity":
+            from Interpolate import AdaptiveSimilarityInterpolator
+            interpolator = AdaptiveSimilarityInterpolator(
+                skeleton_data_dir=str(output_paths['skeleton']),
+                mesh_folder_path=str(folder_path),
+                weights_path=output_paths['skinning']
+            )
+        else:
+            raise ValueError(f"Unsupported interpolation method: {method}")
         
-        # 初始化插值器
-        init_start = time.time()
-        interpolator = VolumetricInterpolator(
-            skeleton_data_dir=str(output_paths['skeleton']),
-            mesh_folder_path=str(folder_path),
-            weights_path=None  # 让插值器自动处理权重
-        )
-        
-        # 设置插值器的输出目录为base目录，这样权重文件会保存在正确位置
+        # set output directory for interpolator
         interpolator.output_dir = str(output_paths['base'])
         
-        init_time = time.time() - init_start
-        print(f"  - 插值器初始化耗时: {init_time:.2f}秒")
-        print(f"  - 插值器输出目录: {interpolator.output_dir}")
+        print(f"  - Interpolator Type: {type(interpolator).__name__}")
+        print(f"  - Interpolator Output Directory: {interpolator.output_dir}")
         
-        # 生成插值帧
+        # generate interpolated frames
         generation_start = time.time()
         interpolated_frames = interpolator.generate_interpolated_frames(
             frame_start=start_frame,
@@ -186,20 +210,20 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
         generation_time = time.time() - generation_start
         
         if not interpolated_frames:
-            print("❌ 没有生成插值帧")
+            print("No interpolated frames generated")
             return False
         
         step_time = time.time() - step_start_time
-        print(f"✅ 插值生成完成！")
-        print(f"  - 生成帧数: {len(interpolated_frames)}")
-        print(f"  - 插值生成耗时: {generation_time:.2f}秒")
-        print(f"  - 步骤总耗时: {step_time:.2f}秒")
-        print(f"  - 输出目录: {output_paths['interpolation']}")
+        print(f"Interpolation Generation Completed!")
+        print(f"  - Number of Generated Frames: {len(interpolated_frames)}")
+        print(f"  - Interpolation Generation Time: {generation_time:.2f} seconds")
+        print(f"  - Step Total Time: {step_time:.2f} seconds")
+        print(f"  - Output Directory: {output_paths['interpolation']}")
         
         return True
         
     except Exception as e:
-        print(f"❌ 插值生成失败: {e}")
+        print(f"插值生成失败: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -209,87 +233,89 @@ def generate_skinning_weights_path(start_frame, end_frame, step=1):
     return f"skinning_weights_ref{start_frame}_opt{start_frame}-{end_frame}_step{step}.npz"
 
 def main():
-    """主函数"""
     parser = argparse.ArgumentParser(description="Volumetric Video Interpolation Pipeline")
-    parser.add_argument("folder_path", help="输入网格文件夹路径")
-    parser.add_argument("start_frame", type=int, help="起始帧索引")
-    parser.add_argument("end_frame", type=int, help="结束帧索引")
-    parser.add_argument("--num_interpolate", type=int, default=10, help="插值帧数 (默认: 10)")
-    parser.add_argument("--skip_skeleton", action="store_true", help="跳过骨骼预测步骤")
-    parser.add_argument("--visualization", action="store_true", help="启用可视化 (默认: 关闭)")
+    parser.add_argument("folder_path", help="Mesh Sequence Folder Path")
+    parser.add_argument("start_frame", type=int, help="Start Frame Index")
+    parser.add_argument("end_frame", type=int, help="End Frame Index")
+    parser.add_argument("--num_interpolate", type=int, default=10, help="Number of Interpolated Frames (Default: 10)")
+    parser.add_argument("--method", choices=["baseline", "dual_reference", "adaptive_similarity"], 
+                       default="baseline", help="Interpolation Method (Default: baseline)")
+    parser.add_argument("--skip_skeleton", action="store_true", help="Skip Skeleton Prediction Step")
+    parser.add_argument("--visualization", action="store_true", help="Enable Visualization (Default: disabled)")
     
     args = parser.parse_args()
     
     pipeline_start_time = time.time()
     
-    print("🎬 Volumetric Video Interpolation Pipeline")
+    print("Volumetric Video Interpolation Pipeline")
     print("="*60)
-    print(f"输入文件夹: {args.folder_path}")
-    print(f"起始帧: {args.start_frame}")
-    print(f"结束帧: {args.end_frame}")
-    print(f"插值帧数: {args.num_interpolate}")
-    print(f"可视化: {'启用' if args.visualization else '禁用'}")
+    print(f"Input Folder: {args.folder_path}")
+    print(f"Start Frame: {args.start_frame}")
+    print(f"End Frame: {args.end_frame}")
+    print(f"Number of Interpolated Frames: {args.num_interpolate}")
+    print(f"Interpolation Method: {args.method}")
+    print(f"Visualization: {'Enabled' if args.visualization else 'Disabled'}")
     
-    # 检查依赖项
+    # check dependencies
     if not check_dependencies():
         return False
     
-    # 检查输入路径
+    # check input path
     folder_path = Path(args.folder_path)
     if not folder_path.exists():
-        print(f"❌ 输入文件夹不存在: {folder_path}")
+        print(f"Input Folder does not exist: {folder_path}")
         return False
     
-    # 设置输出路径
+    # set output path
     setup_start = time.time()
-    output_paths = setup_paths(folder_path)
+    output_paths = setup_paths(folder_path, args.method, args.start_frame, args.end_frame, args.num_interpolate)
     setup_time = time.time() - setup_start
-    print(f"📁 输出目录: {output_paths['base']}")
-    print(f"⏱️  路径设置耗时: {setup_time:.2f}秒")
+    print(f"Output Directory: {output_paths['base']}")
+    print(f"Path Setup Time: {setup_time:.2f} seconds")
     
-    # 步骤1: 骨骼预测
+    # step 1: skeleton prediction
     if not args.skip_skeleton:
         if not step1_skeleton_prediction(folder_path, output_paths):
             return False
     else:
-        print("⏭️  跳过骨骼预测步骤")
+        print("Skip Skeleton Prediction Step")
     
-    # 步骤2: 插值生成
-    if not step2_interpolation(folder_path, args.start_frame, args.end_frame, args.num_interpolate, output_paths):
+    # step 2: interpolation generation
+    if not step2_interpolation(folder_path, args.start_frame, args.end_frame, args.num_interpolate, output_paths, args.method):
         return False
     
-    # 完成
+    # done
     pipeline_time = time.time() - pipeline_start_time
     print("\n" + "="*60)
-    print("🎉 Pipeline 完成！")
+    print("Pipeline Completed!")
     print("="*60)
-    print(f"📁 结果保存在: {output_paths['base']}")
-    print(f"  - 骨骼数据: {output_paths['skeleton']}")
-    print(f"  - 蒙皮权重: {output_paths['skinning']}")
-    print(f"  - 插值结果: {output_paths['interpolation']}")
-    print(f"⏱️  Pipeline总耗时: {pipeline_time:.2f}秒")
+    print(f"Results saved in: {output_paths['base']}")
+    print(f"Skeleton Data: {output_paths['skeleton']}")
+    print(f"Skinning Weights: {output_paths['skinning']}")
+    print(f"Interpolation Results: {output_paths['interpolation']}")
+    print(f"Pipeline Total Time: {pipeline_time:.2f} seconds")
     
-    # 显示生成的文件
+    # show generated files
     interpolation_dir = output_paths['interpolation']
     obj_files = list(interpolation_dir.glob("*.obj"))
     png_files = list(interpolation_dir.glob("*.png"))
     
-    print(f"\n📊 生成的文件:")
-    print(f"  - OBJ文件: {len(obj_files)} 个")
-    print(f"  - PNG文件: {len(png_files)} 个")
+    print(f"\nGenerated Files:")
+    print(f"  - OBJ Files: {len(obj_files)}")
+    print(f"  - PNG Files: {len(png_files)}")
     
     if obj_files:
-        print(f"  - 示例OBJ: {obj_files[0].name}")
+        print(f"  - Example OBJ: {obj_files[0].name}")
     if png_files:
-        print(f"  - 示例PNG: {png_files[0].name}")
+        print(f"  - Example PNG: {png_files[0].name}")
     
     return True
 
 if __name__ == "__main__":
     success = main()
     if success:
-        print("\n✅ Pipeline 执行成功！")
+        print("\nPipeline Execution Successful!")
         sys.exit(0)
     else:
-        print("\n❌ Pipeline 执行失败！")
+        print("\nPipeline Execution Failed!")
         sys.exit(1) 

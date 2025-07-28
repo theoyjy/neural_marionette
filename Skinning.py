@@ -38,56 +38,56 @@ class AutoSkinning:
         self.rest_pose_transforms = None  # 静息姿态变换矩阵
         
     def load_skeleton_data(self):
-        """加载numpy格式的骨骼数据"""
+        """Load Skeleton Data in Numpy Format"""
         try:
-            # 加载关键点数据 [num_frames, num_joints, 4] (x, y, z, confidence)
+            # Load Keypoints Data [num_frames, num_joints, 4] (x, y, z, confidence)
             self.keypoints = np.load(self.skeleton_data_dir / 'keypoints.npy')
             
-            # 加载变换矩阵 [num_frames, num_joints, 4, 4]
+            # Load Transforms Matrix [num_frames, num_joints, 4, 4]
             self.transforms = np.load(self.skeleton_data_dir / 'transforms.npy')
             
-            # 加载父节点关系 [num_joints]
+            # Load Parent Node Relationship [num_joints]
             self.parents = np.load(self.skeleton_data_dir / 'parents.npy')
             
             self.num_frames, self.num_joints = self.keypoints.shape[0], self.keypoints.shape[1]
             
-            print(f"成功加载骨骼数据:")
-            print(f"  - 帧数: {self.num_frames}")
-            print(f"  - 关节数: {self.num_joints}")
-            print(f"  - 关键点形状: {self.keypoints.shape} (包含置信度)")
-            print(f"  - 变换矩阵形状: {self.transforms.shape}")
-            print(f"  - 父节点关系形状: {self.parents.shape}")
+            print(f"Successfully Loaded Skeleton Data:")
+            print(f"  - Number of Frames: {self.num_frames}")
+            print(f"  - Number of Joints: {self.num_joints}")
+            print(f"  - Keypoints Shape: {self.keypoints.shape} (包含置信度)")
+            print(f"  - Transforms Matrix Shape: {self.transforms.shape}")
+            print(f"  - Parent Node Relationship Shape: {self.parents.shape}")
             
         except Exception as e:
-            raise ValueError(f"无法加载骨骼数据: {e}")
+            raise ValueError(f"Failed to Load Skeleton Data: {e}")
             
-        # 尝试加载其他可选数据
+        # Try to Load Other Optional Data
         try:
             if (self.skeleton_data_dir / 'affinity.npy').exists():
                 self.affinity = np.load(self.skeleton_data_dir / 'affinity.npy')
-                print(f"  - 亲和度矩阵形状: {self.affinity.shape}")
+                print(f"  - Affinity Matrix Shape: {self.affinity.shape}")
             else:
                 self.affinity = None
                 
             if (self.skeleton_data_dir / 'priority.npy').exists():
                 self.priority = np.load(self.skeleton_data_dir / 'priority.npy')
-                print(f"  - 优先级形状: {self.priority.shape}")
+                print(f"  - Priority Shape: {self.priority.shape}")
             else:
                 self.priority = None
                 
             if (self.skeleton_data_dir / 'A.npy').exists():
                 self.A = np.load(self.skeleton_data_dir / 'A.npy')
-                print(f"  - A矩阵形状: {self.A.shape}")
+                print(f"  - A Matrix Shape: {self.A.shape}")
             else:
                 self.A = None
                 
             if (self.skeleton_data_dir / 'rotations.npy').exists():
                 self.rotations = np.load(self.skeleton_data_dir / 'rotations.npy')
-                print(f"  - 旋转矩阵形状: {self.rotations.shape}")
+                print(f"  - Rotation Matrix Shape: {self.rotations.shape}")
             else:
                 self.rotations = None
         except Exception as e:
-            print(f"警告: 无法加载可选数据: {e}")
+            print(f"Warning: Failed to Load Optional Data: {e}")
 
     def compute_mesh_normalization_params(self, mesh):
         """
@@ -142,26 +142,31 @@ class AutoSkinning:
         
         return normalized
 
+    def load_reference_vertices(self, reference_frame_idx):
+        """
+        Load reference vertices
+        """
+        self.reference_frame_idx = reference_frame_idx
+        self.reference_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[self.reference_frame_idx]))
+        print(f"Number of Reference Vertices: {len(self.reference_mesh.vertices)}")
+        
+        # pre-compute reference mesh normalization params
+        self.frame_normalization_params[self.reference_frame_idx] = self.compute_mesh_normalization_params(self.reference_mesh)
+
+
     def load_mesh_sequence(self, mesh_folder_path):
         """
-        加载网格序列
-        
-        Args:
-            mesh_folder_path: 包含obj文件的文件夹路径
+        Prepare mesh sequence
         """
         self.mesh_folder_path = Path(mesh_folder_path)
         self.mesh_files = sorted(list(self.mesh_folder_path.glob("*.obj")))
         
         if len(self.mesh_files) != self.num_frames:
-            print(f"警告: 网格文件数量 ({len(self.mesh_files)}) 与骨骼帧数 ({self.num_frames}) 不匹配")
-        
-        # 加载参考网格
-        self.reference_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[self.reference_frame_idx]))
-        print(f"参考网格顶点数: {len(self.reference_mesh.vertices)}")
-        
-        # 预计算参考网格的归一化参数
-        self.frame_normalization_params[self.reference_frame_idx] = self.compute_mesh_normalization_params(self.reference_mesh)
+            print(f"Warning: ({len(self.mesh_files)}) and ({self.num_frames}) do not match")
 
+        self.load_reference_vertices(self.reference_frame_idx)
+        
+        
     def apply_lbs_transform(self, rest_vertices, weights, transforms):
         """
         应用Linear Blend Skinning变换
@@ -630,11 +635,11 @@ class AutoSkinning:
     
     def optimize_reference_frame_skinning(self, optimization_frames=None, regularization_lambda=0.01, max_iter=1000):
         """
-        优化reference frame的skinning权重
+        Optimize skinning weights for reference frame
         
         Args:
-            regularization_lambda: 正则化系数
-            max_iter: 最大迭代次数
+            regularization_lambda: regularization coefficient
+            max_iter: maximum number of iterations
             
         Returns:
             skinning_weights: 优化后的权重矩阵 [V, J]
@@ -1069,10 +1074,7 @@ class AutoSkinning:
     
     def save_skinning_weights(self, output_path):
         """
-        保存skinning权重
-        
-        Args:
-            output_path: 输出文件路径
+        Save self's skinning weights
         """
         if self.skinning_weights is None:
             print("错误: 没有可保存的skinning权重")
@@ -1093,17 +1095,18 @@ class AutoSkinning:
         
         np.savez_compressed(output_path, **skinning_data)
         print(f"Skinning权重已保存到: {output_path}")
+        
 
     def load_skinning_weights(self, input_path):
         """
-        加载skinning权重
+        Load skinning weights
         
         Args:
-            input_path: 输入文件路径
+            input_path: input file path
         """
         input_path = Path(input_path)
         if not input_path.exists():
-            print(f"错误: 文件不存在: {input_path}")
+            print(f"Error: File Does Not Exist: {input_path}")
             return False
         
         try:
@@ -1118,10 +1121,10 @@ class AutoSkinning:
             print(f"  - Rest pose顶点数: {len(self.rest_pose_vertices)}")
             print(f"  - Reference frame: {data['reference_frame_idx']}")
             
-            return True
+            return self.skinning_weights
         except Exception as e:
             print(f"加载skinning权重失败: {e}")
-            return False
+            return None
 
 def run_auto_skinning_pipeline(reference_frame_idx = 5):
     """
@@ -1133,7 +1136,7 @@ def run_auto_skinning_pipeline(reference_frame_idx = 5):
     # 配置路径
     skeleton_data_dir = "output/skeleton_prediction"
     mesh_folder_path = "D:/Code/VVEditor/Rafa_Approves_hd_4k"
-    weights_output_path = f"output/skinning_weights_{reference_frame_idx}.npz"
+    weights_output_path = f"output/skinning_weights/skinning_weights_{reference_frame_idx}.npz"
     
     # 初始化
     skinner = AutoSkinning(
