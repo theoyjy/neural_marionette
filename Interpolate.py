@@ -542,7 +542,8 @@ class VolumetricInterpolator:
     
     def generate_interpolated_frames(self, frame_start, frame_end, num_interpolate, 
                                    max_optimize_frames=5, optimize_weights=True, 
-                                   output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3):
+                                   output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3,
+                                   use_texture=False, use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
         """
         生成插值帧
         
@@ -556,6 +557,10 @@ class VolumetricInterpolator:
             debug_frames: 调试帧列表
             smooth_mesh: 是否对网格进行平滑处理
             subdivide_iter: 细分迭代次数
+            use_texture: 是否生成纹理文件
+            use_vertex_colors: 是否添加顶点颜色
+            save_npy_files: 是否保存npy文件（通常不需要）
+            save_standard_obj: 是否保存标准obj文件（避免重复）
             
         Returns:
             interpolated_frames: 插值帧列表
@@ -633,7 +638,7 @@ class VolumetricInterpolator:
                 # 生成插值帧数据 - 使用实际帧范围
                 frame_data = self.generate_single_interpolated_frame(
                     actual_start, actual_end, t, interpolated_transforms, output_dir, i,
-                    smooth_mesh, subdivide_iter
+                    smooth_mesh, subdivide_iter, save_npy_files, save_standard_obj
                 )
                 
                 if frame_data:
@@ -664,27 +669,37 @@ class VolumetricInterpolator:
         
         return interpolated_frames
     
-    def generate_single_interpolated_frame(self, frame_start, frame_end, t, interpolated_transforms, output_dir, frame_idx, smooth_mesh=False, subdivide_iter=3):
+    def generate_single_interpolated_frame(self, frame_start, frame_end, t, interpolated_transforms, output_dir, frame_idx, smooth_mesh=False, subdivide_iter=3, save_npy_files=False, save_standard_obj=True):
         """
         生成单个插值帧
         
         Args:
-            frame_start: 起始帧索引
-            frame_end: 结束帧索引
-            t: 插值参数 [0, 1]
+            frame_start: 起始帧
+            frame_end: 结束帧
+            t: 插值参数
             interpolated_transforms: 插值后的变换矩阵
             output_dir: 输出目录
             frame_idx: 帧索引
-            smooth_mesh: 是否对网格进行平滑处理
+            smooth_mesh: 是否平滑网格
             subdivide_iter: 细分迭代次数
-            
-        Returns:
-            frame_data: 插值帧数据字典
+            save_npy_files: 是否保存npy文件（通常不需要）
+            save_standard_obj: 是否保存标准obj文件（避免重复）
         """
         # 加载参考网格（起始帧）
         reference_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_start]))
         reference_vertices = np.asarray(reference_mesh.vertices)
         reference_faces = np.asarray(reference_mesh.triangles) if len(reference_mesh.triangles) > 0 else None
+        
+        # 保留原始mesh的纹理坐标和顶点颜色
+        reference_uvs = None
+        reference_vertex_colors = None
+        if hasattr(reference_mesh, 'triangle_uvs') and len(reference_mesh.triangle_uvs) > 0:
+            reference_uvs = np.asarray(reference_mesh.triangle_uvs)
+            print(f"✅ 保留原始纹理坐标: {len(reference_uvs)} 个")
+        
+        if hasattr(reference_mesh, 'vertex_colors') and len(reference_mesh.vertex_colors) > 0:
+            reference_vertex_colors = np.asarray(reference_mesh.vertex_colors)
+            print(f"✅ 保留原始顶点颜色: {len(reference_vertex_colors)} 个")
         
         # 改进的归一化策略：计算整体归一化参数
         all_meshes = []
@@ -739,7 +754,7 @@ class VolumetricInterpolator:
                     self.skinning_weights = extended_weights
             
             # 使用与Skinning.py相同的相对变换处理
-            print(f"    🔧 使用相对变换进行LBS...")
+            print(f"    使用相对变换进行LBS...")
             
             # 获取参考帧变换（使用起始帧作为参考）
             reference_transforms = self.transforms[frame_start]
@@ -764,7 +779,7 @@ class VolumetricInterpolator:
             )
             
             # 修复坐标系问题：将骨骼变换到网格坐标系
-            print(f"    🔧 修复坐标系对齐...")
+            print(f"    修复坐标系对齐...")
             
             # 计算网格中心
             mesh_center = np.mean(transformed_vertices, axis=0)
@@ -803,7 +818,7 @@ class VolumetricInterpolator:
             vertices_end_norm = self.normalize_mesh_vertices(vertices_end[:min_vertices], global_normalization_params)
             
             # 对齐网格和骨骼
-            print(f"    🔧 对齐网格和骨骼（无权重模式）...")
+            print(f"    对齐网格和骨骼（无权重模式）...")
             vertices_start_aligned = self.align_mesh_with_skeleton(vertices_start_norm, interpolated_transforms)
             vertices_end_aligned = self.align_mesh_with_skeleton(vertices_end_norm, interpolated_transforms)
             
@@ -818,6 +833,16 @@ class VolumetricInterpolator:
         interpolated_mesh.vertices = o3d.utility.Vector3dVector(transformed_vertices)
         if reference_faces is not None:
             interpolated_mesh.triangles = o3d.utility.Vector3iVector(reference_faces)
+        
+        # 保留原始纹理坐标
+        if reference_uvs is not None:
+            interpolated_mesh.triangle_uvs = o3d.utility.Vector2dVector(reference_uvs)
+            print(f"✅ 保留原始纹理坐标到插值mesh")
+        
+        # 保留原始顶点颜色
+        if reference_vertex_colors is not None:
+            interpolated_mesh.vertex_colors = o3d.utility.Vector3dVector(reference_vertex_colors)
+            print(f"✅ 保留原始顶点颜色到插值mesh")
         
         # 可选的网格平滑处理
         if smooth_mesh:
@@ -838,15 +863,18 @@ class VolumetricInterpolator:
         
         # 保存到文件（如果需要）
         if output_dir:
-            mesh_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}.obj"
-            o3d.io.write_triangle_mesh(str(mesh_output_path), interpolated_mesh)
+            # 只在需要时保存标准obj文件
+            if save_standard_obj:
+                mesh_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}.obj"
+                o3d.io.write_triangle_mesh(str(mesh_output_path), interpolated_mesh)
             
-            # 保存变换数据
-            transform_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}_transforms.npy"
-            np.save(transform_output_path, interpolated_transforms)
-            
-            keypoints_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}_keypoints.npy"
-            np.save(keypoints_output_path, interpolated_keypoints)
+            # 只在需要时保存变换数据
+            if save_npy_files:
+                transform_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}_transforms.npy"
+                np.save(transform_output_path, interpolated_transforms)
+                
+                keypoints_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}_keypoints.npy"
+                np.save(keypoints_output_path, interpolated_keypoints)
         
         return frame_data
     
@@ -1001,7 +1029,7 @@ class VolumetricInterpolator:
                 temp_mesh.vertex_normals = deepcopy(mesh.vertex_normals)
             
             # 执行Loop细分
-            print(f"    🔧 执行网格细分 (iterations: {subdivide_iter})...")
+            print(f"    执行网格细分 (iterations: {subdivide_iter})...")
             print(f"    - 细分前: {len(temp_mesh.vertices)} 顶点, {len(temp_mesh.triangles)} 面")
             
             temp_mesh = temp_mesh.subdivide_loop(subdivide_iter)
@@ -1172,7 +1200,8 @@ class DualReferenceInterpolator(VolumetricInterpolator):
     
     def generate_interpolated_frames(self, frame_start, frame_end, num_interpolate, 
                                    max_optimize_frames=5, optimize_weights=True, 
-                                   output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3):
+                                   output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3,
+                                   use_texture=False, use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
         """
         使用双参考帧方法生成插值帧
         """
@@ -1216,7 +1245,8 @@ class DualReferenceInterpolator(VolumetricInterpolator):
                 print("Dual reference frame weight optimization failed, will use simple interpolation")
                 return super().generate_interpolated_frames(
                     frame_start, frame_end, num_interpolate, 
-                    max_optimize_frames, False, output_dir, debug_frames, smooth_mesh, subdivide_iter
+                    max_optimize_frames, False, output_dir, debug_frames, smooth_mesh, subdivide_iter,
+                    use_texture, use_vertex_colors, save_npy_files, save_standard_obj
                 )
             
             optimization_time = time.time() - optimization_start
@@ -1430,7 +1460,8 @@ class AdaptiveSimilarityInterpolator(VolumetricInterpolator):
     
     def generate_interpolated_frames(self, frame_start, frame_end, num_interpolate, 
                                    max_optimize_frames=5, optimize_weights=True, 
-                                   output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3):
+                                   output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3,
+                                   use_texture=False, use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
         """
         使用相似帧自适应方法生成插值帧
         
@@ -1755,7 +1786,7 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
             
             # 优先使用指定的网格数据（与用户输入的帧相关）
             if hasattr(self, 'mesh_files') and len(self.mesh_files) > 0:
-                print(f"    🔧 使用指定帧的网格数据...")
+                print(f"    使用指定帧的网格数据...")
                 print(f"    - 起始帧: {frame_start}")
                 print(f"    - 结束帧: {frame_end}")
                 return self._load_mesh_voxel_sequence(frame_start, frame_end)
@@ -1763,7 +1794,7 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
             # 如果没有网格数据，使用demo数据作为fallback
             demo_source_file = 'data/demo/source/gHO_sBM_cAll_d20_mHO1_ch05.npy'
             if os.path.exists(demo_source_file):
-                print(f"    🔧 使用demo数据作为fallback: {demo_source_file}")
+                print(f"    使用demo数据作为fallback: {demo_source_file}")
                 return self._load_demo_voxel_sequence(demo_source_file, frame_start, frame_end)
             
             print(f"❌ 没有找到可用的数据源")
@@ -2090,7 +2121,8 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
     
     def generate_interpolated_frames(self, frame_start, frame_end, num_interpolate, 
                                    max_optimize_frames=5, optimize_weights=True, 
-                                   output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3):
+                                   output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3,
+                                   use_texture=False, use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
         """
         使用Neural Marionette方法生成插值帧
         """
@@ -2121,7 +2153,7 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
         
         try:
             # 加载体素序列 - 使用实际帧范围
-            print(f"  🔧 加载体素序列...")
+            print(f"  加载体素序列...")
             voxel_sequence, points_sequence = self._load_voxel_sequence(actual_start, actual_end)
             
             if voxel_sequence is None:
@@ -2131,7 +2163,7 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
             print(f"    - 体素序列形状: {voxel_sequence.shape}")
             
             # 使用Neural Marionette进行插值 - 使用实际帧范围
-            print(f"  🔧 执行Neural Marionette插值...")
+            print(f"  执行Neural Marionette插值...")
             interp_voxel, selected_keypoints, parents = self._interpolate_with_neural_marionette(
                 voxel_sequence, actual_start, actual_end, num_interpolate
             )
@@ -2143,7 +2175,7 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
             print(f"    - 插值体素形状: {interp_voxel.shape}")
             
             # 转换为网格序列
-            print(f"  🔧 转换体素到网格...")
+            print(f"  转换体素到网格...")
             mesh_sequence = self._voxel_to_mesh(interp_voxel)
             
             if len(mesh_sequence) == 0:
@@ -2199,12 +2231,13 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
                         mesh_output_path = Path(output_dir) / f"neural_marionette_frame_{i:04d}.obj"
                         o3d.io.write_triangle_mesh(str(mesh_output_path), mesh)
                         
-                        # 保存变换数据
-                        transform_output_path = Path(output_dir) / f"neural_marionette_frame_{i:04d}_transforms.npy"
-                        np.save(transform_output_path, transforms)
-                        
-                        keypoints_output_path = Path(output_dir) / f"neural_marionette_frame_{i:04d}_keypoints.npy"
-                        np.save(keypoints_output_path, keypoints)
+                        # 只在需要时保存变换数据
+                        if save_npy_files:
+                            transform_output_path = Path(output_dir) / f"neural_marionette_frame_{i:04d}_transforms.npy"
+                            np.save(transform_output_path, transforms)
+                            
+                            keypoints_output_path = Path(output_dir) / f"neural_marionette_frame_{i:04d}_keypoints.npy"
+                            np.save(keypoints_output_path, keypoints)
                     
                     interpolated_frames.append(frame_data)
                     

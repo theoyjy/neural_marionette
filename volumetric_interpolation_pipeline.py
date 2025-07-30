@@ -6,6 +6,7 @@ Volumetric Video Interpolation Pipeline
 1. 骨骼预测 (SkelSequencePrediction.py)
 2. 插值生成 (Interpolate.py) - 支持多种插值方法
 3. 蒙皮权重优化 (Skinning.py)
+4. 纹理处理 (texture_utils.py) - 新增纹理支持
 
 支持的插值方法：
 - baseline: 基础插值方法
@@ -13,7 +14,7 @@ Volumetric Video Interpolation Pipeline
 - adaptive_similarity: 相似帧自适应插值
 
 使用流程：
-python volumetric_interpolation_pipeline.py <folder_path> <start_frame> <end_frame> [num_interpolate] [--method]
+python volumetric_interpolation_pipeline.py <folder_path> <start_frame> <end_frame> [num_interpolate] [--method] [--texture]
 """
 
 import os
@@ -23,6 +24,14 @@ from pathlib import Path
 import time
 import hashlib
 import json
+
+# 导入纹理处理模块
+try:
+    from texture_utils import TextureProcessor, integrate_texture_processing
+    TEXTURE_AVAILABLE = True
+except ImportError:
+    print("警告: 纹理处理模块不可用，将跳过纹理处理")
+    TEXTURE_AVAILABLE = False
 
 
 def check_dependencies():
@@ -99,61 +108,78 @@ def step1_skeleton_prediction(folder_path, output_paths):
     
     step_start_time = time.time()
     
-    # 检查是否已经存在骨骼数据
-    skeleton_data_path = output_paths['skeleton']
-    keypoints_file = skeleton_data_path / "keypoints.npy"
-    transforms_file = skeleton_data_path / "transforms.npy"
-    parents_file = skeleton_data_path / "parents.npy"
-    
-    if keypoints_file.exists() and transforms_file.exists() and parents_file.exists():
-        print(f"Found existing skeleton data: {skeleton_data_path}")
-        print("  Skip Skeleton Prediction Step")
-        return True
-    
     print(f"Start Skeleton Prediction...")
-    print(f"  Input Folder: {folder_path}")
-    print(f"  Output Directory: {skeleton_data_path}")
+    print(f"Input Folder: {folder_path}")
+    print(f"Output Directory: {output_paths['skeleton']}")
     
     try:
-        # 导入并运行骨骼预测
-        from SkelSequencePrediction import main as skel_prediction_main
+        from SkelSequencePrediction import SequenceSkeletonPredictor
         
-        # 保存原始参数
-        original_argv = sys.argv.copy()
+        # 配置预训练模型路径
+        exp_dir = 'pretrained/aist'
+        checkpoint_path = os.path.join(exp_dir, 'aist_pretrained.pth')
+        opt_path = os.path.join(exp_dir, 'opt.pickle')
         
-        # 设置新的参数
-        sys.argv = [
-            'SkelSequencePrediction.py',
-            '--mesh_folder', str(folder_path),
-            '--output_dir', str(skeleton_data_path),
-            '--max_frames', '200'  # 限制最大帧数
-        ]
+        predictor = SequenceSkeletonPredictor(
+            checkpoint_path=checkpoint_path,
+            opt_path=opt_path
+        )
         
-        # 运行骨骼预测
+        # 加载网格序列
+        print("加载网格序列...")
+        voxel_sequence, mesh_sequence, points_sequence = predictor.load_mesh_sequence(
+            str(folder_path), file_pattern="*.obj", max_frames=160
+        )
+        
+        # 预测骨骼
         prediction_start = time.time()
-        skel_prediction_main()
+        results = predictor.predict_skeleton_sequence(voxel_sequence)
         prediction_time = time.time() - prediction_start
         
-        # 恢复原始参数
-        sys.argv = original_argv
+        # 保存结果
+        print("保存骨骼预测结果...")
+        predictor.save_skeleton_results(results, str(output_paths['skeleton']), points_sequence)
         
-        step_time = time.time() - step_start_time
-        print(f"Skeleton Prediction Completed!")
-        print(f"Prediction Time: {prediction_time:.2f} seconds")
-        print(f"Step Total Time: {step_time:.2f} seconds")
+        success = results is not None
         
-        return True
-        
+        if success:
+            step_time = time.time() - step_start_time
+            print(f"Skeleton Prediction Completed!")
+            print(f"  - Prediction Time: {prediction_time:.2f} seconds")
+            print(f"  - Step Total Time: {step_time:.2f} seconds")
+            print(f"  - Output Directory: {output_paths['skeleton']}")
+            return True
+        else:
+            print("Skeleton Prediction Failed")
+            return False
+            
     except Exception as e:
-        print(f"Skeleton Prediction Failed: {e}")
+        print(f"骨骼预测失败: {e}")
         import traceback
         traceback.print_exc()
         return False
 
-def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, output_paths, method="baseline"):
-    """Step 2: Interpolation Generation"""
+def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, output_paths, method="baseline", 
+                       use_texture=False, use_vertex_colors=False, save_standard_obj=False, save_npy_files=False):
+    """
+    Step 2: 插值生成
+    
+    Args:
+        folder_path: 输入文件夹路径
+        start_frame: 起始帧
+        end_frame: 结束帧
+        num_interpolate: 插值帧数
+        output_paths: 输出路径字典
+        method: 插值方法
+        use_texture: 是否启用纹理处理
+        use_vertex_colors: 是否使用顶点颜色
+        save_standard_obj: 是否保存标准obj文件（避免重复）
+        save_npy_files: 是否保存npy文件（通常不需要）
+    """
     print("\n" + "="*60)
     print(f"Step 2: Interpolation Generation ({method})")
+    if use_texture or use_vertex_colors:
+        print("Texture Processing: Enabled")
     print("="*60)
     
     step_start_time = time.time()
@@ -168,6 +194,12 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
     print(f"Weights Directory: {output_paths['skinning']}")
     
     try:
+        # 初始化纹理处理器（如果启用）
+        texture_processor = None
+        if TEXTURE_AVAILABLE and (use_texture or use_vertex_colors):
+            print(f"初始化纹理处理器...")
+            texture_processor = TextureProcessor(str(folder_path))
+        
         # select interpolator based on method
         if method == "baseline":
             from Interpolate import VolumetricInterpolator
@@ -190,6 +222,13 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
                 mesh_folder_path=str(folder_path),
                 weights_path=output_paths['skinning']
             )
+        elif method == "enhanced_adaptive":
+            from EnhancedAdaptiveInterpolator import EnhancedAdaptiveInterpolator
+            interpolator = EnhancedAdaptiveInterpolator(
+                skeleton_data_dir=str(output_paths['skeleton']),
+                mesh_folder_path=str(folder_path),
+                weights_path=output_paths['skinning']
+            )
         elif method == "neural_marionette":
             from Interpolate import NeuralMarionetteInterpolator
             interpolator = NeuralMarionetteInterpolator(
@@ -206,16 +245,40 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
         print(f"  - Interpolator Type: {type(interpolator).__name__}")
         print(f"  - Interpolator Output Directory: {interpolator.output_dir}")
         
+        # 集成纹理处理（如果启用）
+        if texture_processor is not None:
+            print(f"集成纹理处理到插值器...")
+            integrate_texture_processing(interpolator, str(folder_path), None)
+        
         # generate interpolated frames
         generation_start = time.time()
-        interpolated_frames = interpolator.generate_interpolated_frames(
-            frame_start=start_frame,
-            frame_end=end_frame,
-            num_interpolate=num_interpolate,
-            max_optimize_frames=5,
-            optimize_weights=True,
-            output_dir=str(output_paths['interpolation'])
-        )
+        
+        # 调用插值方法，传递纹理处理参数
+        if texture_processor is not None:
+            interpolated_frames = interpolator.generate_interpolated_frames(
+                frame_start=start_frame,
+                frame_end=end_frame,
+                num_interpolate=num_interpolate,
+                max_optimize_frames=5,
+                optimize_weights=True,
+                output_dir=str(output_paths['interpolation']),
+                use_texture=use_texture,
+                use_vertex_colors=use_vertex_colors,
+                save_standard_obj=save_standard_obj,
+                save_npy_files=save_npy_files
+            )
+        else:
+            interpolated_frames = interpolator.generate_interpolated_frames(
+                frame_start=start_frame,
+                frame_end=end_frame,
+                num_interpolate=num_interpolate,
+                max_optimize_frames=5,
+                optimize_weights=True,
+                output_dir=str(output_paths['interpolation']),
+                save_standard_obj=save_standard_obj,
+                save_npy_files=save_npy_files
+            )
+        
         generation_time = time.time() - generation_start
         
         if not interpolated_frames:
@@ -228,6 +291,11 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
         print(f"  - Interpolation Generation Time: {generation_time:.2f} seconds")
         print(f"  - Step Total Time: {step_time:.2f} seconds")
         print(f"  - Output Directory: {output_paths['interpolation']}")
+        
+        # 统计纹理处理结果
+        if texture_processor is not None:
+            texture_success_count = sum(1 for frame in interpolated_frames if frame.get('success', False))
+            print(f"  - Texture Processing: {texture_success_count}/{len(interpolated_frames)} frames processed successfully")
         
         return True
         
@@ -249,100 +317,72 @@ def main():
     parser.add_argument("--num_interpolate", type=int, default=10, help="Number of Interpolated Frames (Default: 10)")
     parser.add_argument("--method", choices=["baseline", "dual_reference", "adaptive_similarity", "neural_marionette"], 
                        default="baseline", help="Interpolation Method (Default: baseline)")
-    parser.add_argument("--skip_skeleton", action="store_true", help="Skip Skeleton Prediction Step")
-    parser.add_argument("--visualization", action="store_true", help="Enable Visualization (Default: disabled)")
-    parser.add_argument("--result_path", help="Results Info Saved Once Interpolation Finished")
+    parser.add_argument("--texture", action="store_true", help="Enable texture processing")
+    parser.add_argument("--vertex-colors", action="store_true", help="Enable vertex color generation")
+    parser.add_argument("--skip-skeleton", action="store_true", help="Skip skeleton prediction step")
+    parser.add_argument("--skip-skinning", action="store_true", help="Skip skinning weights optimization")
     
     args = parser.parse_args()
     
-    pipeline_start_time = time.time()
-    
+    print("="*60)
     print("Volumetric Video Interpolation Pipeline")
     print("="*60)
-    print(f"Input Folder: {args.folder_path}")
-    print(f"Start Frame: {args.start_frame}")
-    print(f"End Frame: {args.end_frame}")
-    print(f"Number of Interpolated Frames: {args.num_interpolate}")
-    print(f"Interpolation Method: {args.method}")
-    print(f"Visualization: {'Enabled' if args.visualization else 'Disabled'}")
     
-    # check dependencies
+    # 检查依赖
     if not check_dependencies():
-        return False
+        return
     
-    # check input path
-    folder_path = Path(args.folder_path)
-    if not folder_path.exists():
-        print(f"Input Folder does not exist: {folder_path}")
-        return False
+    # 检查纹理处理可用性
+    if (args.texture or args.vertex_colors) and not TEXTURE_AVAILABLE:
+        print("错误: 纹理处理不可用，请检查依赖项")
+        return
     
-    # set output path
-    setup_start = time.time()
-    output_paths = setup_paths(folder_path, args.method, args.start_frame, args.end_frame, args.num_interpolate)
-    setup_time = time.time() - setup_start
-    print(f"Output Directory: {output_paths['base']}")
-    print(f"Path Setup Time: {setup_time:.2f} seconds")
+    # 设置输出路径
+    output_paths = setup_paths(
+        args.folder_path, 
+        args.method, 
+        args.start_frame, 
+        args.end_frame, 
+        args.num_interpolate
+    )
     
-    # step 1: skeleton prediction
+    total_start_time = time.time()
+    
+    # Step 1: Skeleton Prediction
     if not args.skip_skeleton:
-        if not step1_skeleton_prediction(folder_path, output_paths):
-            return False
+        if not step1_skeleton_prediction(args.folder_path, output_paths):
+            print("Skeleton Prediction failed, exiting...")
+            return
     else:
-        print("Skip Skeleton Prediction Step")
+        print("Skipping Skeleton Prediction...")
     
-    # step 2: interpolation generation
-    if not step2_interpolation(folder_path, args.start_frame, args.end_frame, args.num_interpolate, output_paths, args.method):
-        return False
+    # Step 2: Interpolation Generation
+    if not step2_interpolation(
+        args.folder_path, 
+        args.start_frame, 
+        args.end_frame, 
+        args.num_interpolate, 
+        output_paths, 
+        args.method,
+        args.texture,
+        args.vertex_colors
+    ):
+        print("Interpolation Generation failed, exiting...")
+        return
     
-    # done
-    pipeline_time = time.time() - pipeline_start_time
+    total_time = time.time() - total_start_time
+    
     print("\n" + "="*60)
-    print("Pipeline Completed!")
+    print("Pipeline Completed Successfully!")
     print("="*60)
-    print(f"Results saved in: {output_paths['base']}")
-    print(f"Skeleton Data: {output_paths['skeleton']}")
-    print(f"Skinning Weights: {output_paths['skinning']}")
+    print(f"Total Time: {total_time:.2f} seconds")
+    print(f"Output Directory: {output_paths['base']}")
     print(f"Interpolation Results: {output_paths['interpolation']}")
-    print(f"Pipeline Total Time: {pipeline_time:.2f} seconds")
     
-    # show generated files
-    interpolation_dir = output_paths['interpolation']
-    interpolation_dir = os.path.abspath(interpolation_dir)
-    
-    # save results info as json
-    if args.result_path:
-        results = {
-            "input_folder": args.folder_path,
-            "start_frame": args.start_frame,
-            "end_frame": args.end_frame,
-            "num_interpolate": args.num_interpolate,
-            "method": args.method,
-            "results_path": args.result_path,
-            "status": "success",
-            "interpolated_folder": str(interpolation_dir),
-            "other_output_paths": {
-                "base": str(output_paths['base']),
-                "skeleton": str(output_paths['skeleton']),
-                "skinning": str(output_paths['skinning']),
-            }
-        }
-        with open(args.result_path, 'w') as f:
-            json.dump(results, f, indent=4)
-            
-        print(f"Results info saved to: {args.result_path}: {results}")
-
-    if obj_files:
-        print(f"  - Example OBJ: {obj_files[0].name}")
-    if png_files:
-        print(f"  - Example PNG: {png_files[0].name}")
-    
-    return True
+    if args.texture or args.vertex_colors:
+        print(f"Texture Processing: Enabled")
+        print(f"  - Texture Files: {args.texture}")
+        print(f"  - Vertex Colors: {args.vertex_colors}")
 
 if __name__ == "__main__":
-    success = main()
-    if success:
-        print("\nPipeline Execution Successful!")
-        sys.exit(0)
-    else:
-        print("\nPipeline Execution Failed!")
-        sys.exit(1) 
+    main() 
