@@ -378,10 +378,10 @@ def visualize_skeleton(data_dir, output_dir, create_sequence=True, create_animat
 # 使用示例
 if __name__ == "__main__":
     # 骨骼数据目录（包含keypoints.npy, transforms.npy, parents.npy）
-    data_dir = 'output/skeleton_prediction'
+    data_dir = 'output/pipeline_Rafa_Approves_hd_4k_8522ed0a/skeleton_prediction'
     
     # 输出目录
-    output_dir = 'output/skeleton_visualization'
+    output_dir = 'output/pipeline_Rafa_Approves_hd_4k_8522ed0a/skeleton_visualization'
     
     # 创建GLB可视化
     results = visualize_skeleton(

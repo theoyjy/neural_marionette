@@ -22,6 +22,8 @@ import argparse
 from pathlib import Path
 import time
 import hashlib
+import json
+
 
 def check_dependencies():
     print("Check Dependencies...")
@@ -188,6 +190,13 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
                 mesh_folder_path=str(folder_path),
                 weights_path=output_paths['skinning']
             )
+        elif method == "neural_marionette":
+            from Interpolate import NeuralMarionetteInterpolator
+            interpolator = NeuralMarionetteInterpolator(
+                skeleton_data_dir=str(output_paths['skeleton']),
+                mesh_folder_path=str(folder_path),
+                weights_path=output_paths['skinning']
+            )
         else:
             raise ValueError(f"Unsupported interpolation method: {method}")
         
@@ -238,10 +247,11 @@ def main():
     parser.add_argument("start_frame", type=int, help="Start Frame Index")
     parser.add_argument("end_frame", type=int, help="End Frame Index")
     parser.add_argument("--num_interpolate", type=int, default=10, help="Number of Interpolated Frames (Default: 10)")
-    parser.add_argument("--method", choices=["baseline", "dual_reference", "adaptive_similarity"], 
+    parser.add_argument("--method", choices=["baseline", "dual_reference", "adaptive_similarity", "neural_marionette"], 
                        default="baseline", help="Interpolation Method (Default: baseline)")
     parser.add_argument("--skip_skeleton", action="store_true", help="Skip Skeleton Prediction Step")
     parser.add_argument("--visualization", action="store_true", help="Enable Visualization (Default: disabled)")
+    parser.add_argument("--result_path", help="Results Info Saved Once Interpolation Finished")
     
     args = parser.parse_args()
     
@@ -300,10 +310,31 @@ def main():
     obj_files = list(interpolation_dir.glob("*.obj"))
     png_files = list(interpolation_dir.glob("*.png"))
     
-    print(f"\nGenerated Files:")
-    print(f"  - OBJ Files: {len(obj_files)}")
-    print(f"  - PNG Files: {len(png_files)}")
-    
+    # save results info as json
+    if args.result_path:
+        results = {
+            "input_folder": args.folder_path,
+            "start_frame": args.start_frame,
+            "end_frame": args.end_frame,
+            "num_interpolate": args.num_interpolate,
+            "method": args.method,
+            "results_path": args.result_path,
+            "results_info": {
+                "obj_files": [str(obj_file) for obj_file in obj_files],
+                "interpolation_dir": str(interpolation_dir),
+                "output_paths": {
+                    "base": str(output_paths['base']),
+                    "skeleton": str(output_paths['skeleton']),
+                    "skinning": str(output_paths['skinning']),
+                    "interpolation": str(output_paths['interpolation'])
+                }
+            }
+        }
+        with open(args.result_path, 'w') as f:
+            json.dump(results, f, indent=4)
+            
+        print(f"Results info saved to: {args.result_path}: {results}")
+
     if obj_files:
         print(f"  - Example OBJ: {obj_files[0].name}")
     if png_files:

@@ -69,13 +69,45 @@ python volumetric_interpolation_pipeline.py <folder_path> <start_frame> <end_fra
 python volumetric_interpolation_pipeline.py <folder_path> <start_frame> <end_frame> --method adaptive_similarity
 ```
 
+### 4. Neural Marionette插值 (Neural Marionette)
+
+**特点：**
+- 基于VAE（变分自编码器）的生成模型
+- 使用RNN状态和潜在变量进行插值
+- 支持时序一致性和高质量生成
+- 直接从nmario源码移植的插值方法
+
+**工作原理：**
+1. 将输入网格序列转换为体素表示
+2. 使用Neural Marionette网络检测关键点和affinity
+3. 通过RNN状态和潜在变量进行时序插值
+4. 使用后验分布和先验分布生成中间帧
+5. 将生成的体素转换回网格表示
+
+**适用场景：**
+- 需要最高质量的插值结果
+- 复杂的时序变化
+- 基于深度学习的生成方法
+- 需要时序一致性的场景
+
+**使用方法：**
+```bash
+python volumetric_interpolation_pipeline.py <folder_path> <start_frame> <end_frame> --method neural_marionette
+```
+
+**注意事项：**
+- 需要预训练的Neural Marionette模型
+- 计算复杂度较高，需要GPU支持
+- 生成质量最高，但速度较慢
+
 ## 性能比较
 
 | 方法 | 计算复杂度 | 内存使用 | 插值质量 | 适用场景 |
 |------|------------|----------|----------|----------|
 | Baseline | 低 | 低 | 中等 | 简单插值 |
 | Dual Reference | 中等 | 中等 | 高 | 中等复杂度 |
-| Adaptive Similarity | 高 | 高 | 最高 | 复杂场景 |
+| Adaptive Similarity | 高 | 高 | 高 | 复杂场景 |
+| Neural Marionette | 最高 | 最高 | 最高 | 深度学习生成 |
 
 ## 使用示例
 
@@ -90,6 +122,9 @@ python volumetric_interpolation_pipeline.py data/demo/source 0 10 --num_interpol
 
 # 使用自适应相似性方法
 python volumetric_interpolation_pipeline.py data/demo/source 0 10 --num_interpolate 20 --method adaptive_similarity
+
+# 使用Neural Marionette方法
+python volumetric_interpolation_pipeline.py data/demo/source 0 10 --num_interpolate 20 --method neural_marionette
 ```
 
 ### 批量测试
@@ -133,6 +168,10 @@ output/
         ├── adaptive_frame_0000.obj
         ├── adaptive_frame_0001.obj
         └── ...
+    └── interpolation_neural_marionette/  # Neural Marionette插值结果
+        ├── neural_marionette_frame_0000.obj
+        ├── neural_marionette_frame_0001.obj
+        └── ...
 ```
 
 **优势：**
@@ -149,7 +188,7 @@ output/
 - `start_frame`: 起始帧索引
 - `end_frame`: 结束帧索引
 - `--num_interpolate`: 插值帧数（默认: 10）
-- `--method`: 插值方法（baseline/dual_reference/adaptive_similarity）
+- `--method`: 插值方法（baseline/dual_reference/adaptive_similarity/neural_marionette）
 - `--skip_skeleton`: 跳过骨骼预测步骤
 - `--visualization`: 启用可视化
 
