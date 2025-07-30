@@ -307,8 +307,7 @@ def main():
     
     # show generated files
     interpolation_dir = output_paths['interpolation']
-    obj_files = list(interpolation_dir.glob("*.obj"))
-    png_files = list(interpolation_dir.glob("*.png"))
+    interpolation_dir = os.path.abspath(interpolation_dir)
     
     # save results info as json
     if args.result_path:
@@ -319,15 +318,12 @@ def main():
             "num_interpolate": args.num_interpolate,
             "method": args.method,
             "results_path": args.result_path,
-            "results_info": {
-                "obj_files": [str(obj_file) for obj_file in obj_files],
-                "interpolation_dir": str(interpolation_dir),
-                "output_paths": {
-                    "base": str(output_paths['base']),
-                    "skeleton": str(output_paths['skeleton']),
-                    "skinning": str(output_paths['skinning']),
-                    "interpolation": str(output_paths['interpolation'])
-                }
+            "status": "success",
+            "interpolated_folder": str(interpolation_dir),
+            "other_output_paths": {
+                "base": str(output_paths['base']),
+                "skeleton": str(output_paths['skeleton']),
+                "skinning": str(output_paths['skinning']),
             }
         }
         with open(args.result_path, 'w') as f:
