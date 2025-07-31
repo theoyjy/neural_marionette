@@ -27,11 +27,11 @@ import json
 
 # 导入纹理处理模块
 try:
-    from texture_utils import TextureProcessor, integrate_texture_processing
-    TEXTURE_AVAILABLE = True
+    from texture_utils import VertexColorProcessor, integrate_vertex_color_processing
+    VERTEX_COLOR_AVAILABLE = True
 except ImportError:
-    print("警告: 纹理处理模块不可用，将跳过纹理处理")
-    TEXTURE_AVAILABLE = False
+    print("警告: 顶点颜色处理模块不可用，将跳过顶点颜色处理")
+    VERTEX_COLOR_AVAILABLE = False
 
 
 def check_dependencies():
@@ -112,6 +112,19 @@ def step1_skeleton_prediction(folder_path, output_paths):
     print(f"Input Folder: {folder_path}")
     print(f"Output Directory: {output_paths['skeleton']}")
     
+    # 检查是否已经存在骨骼预测结果
+    skeleton_dir = output_paths['skeleton']
+    keypoints_file = os.path.join(skeleton_dir, 'keypoints.npy')
+    transforms_file = os.path.join(skeleton_dir, 'transforms.npy')
+    parents_file = os.path.join(skeleton_dir, 'parents.npy')
+    
+    if os.path.exists(keypoints_file) and os.path.exists(transforms_file) and os.path.exists(parents_file):
+        print(f"✅ 发现已保存的骨骼预测结果，跳过预测步骤")
+        print(f"  - Keypoints: {keypoints_file}")
+        print(f"  - Transforms: {transforms_file}")
+        print(f"  - Parents: {parents_file}")
+        return True
+    
     try:
         from SkelSequencePrediction import SequenceSkeletonPredictor
         
@@ -160,45 +173,42 @@ def step1_skeleton_prediction(folder_path, output_paths):
         return False
 
 def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, output_paths, method="baseline", 
-                       use_texture=False, use_vertex_colors=False, save_standard_obj=False, save_npy_files=False):
+                       save_standard_obj=False, save_npy_files=False):
     """
     Step 2: 插值生成
     
     Args:
         folder_path: 输入文件夹路径
-        start_frame: 起始帧
-        end_frame: 结束帧
+        start_frame: 起始帧索引（排序后文件列表的索引，从0开始）
+        end_frame: 结束帧索引（排序后文件列表的索引，从0开始）
         num_interpolate: 插值帧数
         output_paths: 输出路径字典
         method: 插值方法
-        use_texture: 是否启用纹理处理
-        use_vertex_colors: 是否使用顶点颜色
         save_standard_obj: 是否保存标准obj文件（避免重复）
         save_npy_files: 是否保存npy文件（通常不需要）
     """
     print("\n" + "="*60)
     print(f"Step 2: Interpolation Generation ({method})")
-    if use_texture or use_vertex_colors:
-        print("Texture Processing: Enabled")
+    print("Vertex Color Processing: Enabled")
     print("="*60)
     
     step_start_time = time.time()
     
     print(f"Start Interpolation Generation...")
     print(f"Input Folder: {folder_path}")
-    print(f"Start Frame: {start_frame}")
-    print(f"End Frame: {end_frame}")
+    print(f"Start Frame Index: {start_frame}")
+    print(f"End Frame Index: {end_frame}")
     print(f"Number of Interpolated Frames: {num_interpolate}")
     print(f"Interpolation Method: {method}")
     print(f"Output Directory: {output_paths['interpolation']}")
     print(f"Weights Directory: {output_paths['skinning']}")
     
     try:
-        # 初始化纹理处理器（如果启用）
-        texture_processor = None
-        if TEXTURE_AVAILABLE and (use_texture or use_vertex_colors):
-            print(f"初始化纹理处理器...")
-            texture_processor = TextureProcessor(str(folder_path))
+        # 初始化顶点颜色处理器
+        vertex_color_processor = None
+        if VERTEX_COLOR_AVAILABLE:
+            print(f"初始化顶点颜色处理器...")
+            vertex_color_processor = VertexColorProcessor(str(folder_path))
         
         # select interpolator based on method
         if method == "baseline":
@@ -245,39 +255,25 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
         print(f"  - Interpolator Type: {type(interpolator).__name__}")
         print(f"  - Interpolator Output Directory: {interpolator.output_dir}")
         
-        # 集成纹理处理（如果启用）
-        if texture_processor is not None:
-            print(f"集成纹理处理到插值器...")
-            integrate_texture_processing(interpolator, str(folder_path), None)
+        # 集成顶点颜色处理（如果启用）
+        if vertex_color_processor is not None:
+            print(f"集成顶点颜色处理到插值器...")
+            integrate_vertex_color_processing(interpolator, str(folder_path))
         
         # generate interpolated frames
         generation_start = time.time()
         
-        # 调用插值方法，传递纹理处理参数
-        if texture_processor is not None:
-            interpolated_frames = interpolator.generate_interpolated_frames(
-                frame_start=start_frame,
-                frame_end=end_frame,
-                num_interpolate=num_interpolate,
-                max_optimize_frames=5,
-                optimize_weights=True,
-                output_dir=str(output_paths['interpolation']),
-                use_texture=use_texture,
-                use_vertex_colors=use_vertex_colors,
-                save_standard_obj=save_standard_obj,
-                save_npy_files=save_npy_files
-            )
-        else:
-            interpolated_frames = interpolator.generate_interpolated_frames(
-                frame_start=start_frame,
-                frame_end=end_frame,
-                num_interpolate=num_interpolate,
-                max_optimize_frames=5,
-                optimize_weights=True,
-                output_dir=str(output_paths['interpolation']),
-                save_standard_obj=save_standard_obj,
-                save_npy_files=save_npy_files
-            )
+        # 调用插值方法 - start_frame和end_frame已经是排序后文件列表的索引
+        interpolated_frames = interpolator.generate_interpolated_frames(
+            frame_start=start_frame,
+            frame_end=end_frame,
+            num_interpolate=num_interpolate,
+            max_optimize_frames=5,
+            optimize_weights=True,
+            output_dir=str(output_paths['interpolation']),
+            save_standard_obj=save_standard_obj,
+            save_npy_files=save_npy_files
+        )
         
         generation_time = time.time() - generation_start
         
@@ -293,9 +289,9 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
         print(f"  - Output Directory: {output_paths['interpolation']}")
         
         # 统计纹理处理结果
-        if texture_processor is not None:
-            texture_success_count = sum(1 for frame in interpolated_frames if frame.get('success', False))
-            print(f"  - Texture Processing: {texture_success_count}/{len(interpolated_frames)} frames processed successfully")
+        if vertex_color_processor is not None:
+            vertex_color_success_count = sum(1 for frame in interpolated_frames if frame.get('success', False))
+            print(f"  - Vertex Color Processing: {vertex_color_success_count}/{len(interpolated_frames)} frames processed successfully")
         
         return True
         
@@ -312,16 +308,14 @@ def generate_skinning_weights_path(start_frame, end_frame, step=1):
 def main():
     parser = argparse.ArgumentParser(description="Volumetric Video Interpolation Pipeline")
     parser.add_argument("folder_path", help="Mesh Sequence Folder Path")
-    parser.add_argument("start_frame", type=int, help="Start Frame Index")
-    parser.add_argument("end_frame", type=int, help="End Frame Index")
+    parser.add_argument("start_frame", type=int, help="Start Frame Index (index in sorted file list, starting from 0)")
+    parser.add_argument("end_frame", type=int, help="End Frame Index (index in sorted file list, starting from 0)")
     parser.add_argument("--num_interpolate", type=int, default=10, help="Number of Interpolated Frames (Default: 10)")
     parser.add_argument("--method", choices=["baseline", "dual_reference", "adaptive_similarity", "neural_marionette"], 
                        default="baseline", help="Interpolation Method (Default: baseline)")
-    parser.add_argument("--texture", action="store_true", help="Enable texture processing")
-    parser.add_argument("--vertex-colors", action="store_true", help="Enable vertex color generation")
-    parser.add_argument("--skip-skeleton", action="store_true", help="Skip skeleton prediction step")
     parser.add_argument("--skip-skinning", action="store_true", help="Skip skinning weights optimization")
-    
+    parser.add_argument("--result_path", help="Results Info Saved Once Interpolation Finished")
+
     args = parser.parse_args()
     
     print("="*60)
@@ -332,9 +326,9 @@ def main():
     if not check_dependencies():
         return
     
-    # 检查纹理处理可用性
-    if (args.texture or args.vertex_colors) and not TEXTURE_AVAILABLE:
-        print("错误: 纹理处理不可用，请检查依赖项")
+    # 检查顶点颜色处理可用性
+    if not VERTEX_COLOR_AVAILABLE:
+        print("错误: 顶点颜色处理不可用，请检查依赖项")
         return
     
     # 设置输出路径
@@ -349,25 +343,27 @@ def main():
     total_start_time = time.time()
     
     # Step 1: Skeleton Prediction
-    if not args.skip_skeleton:
-        if not step1_skeleton_prediction(args.folder_path, output_paths):
-            print("Skeleton Prediction failed, exiting...")
-            return
-    else:
-        print("Skipping Skeleton Prediction...")
+    if not step1_skeleton_prediction(args.folder_path, output_paths):
+        print("Skeleton Prediction failed, exiting...")
+        return
     
     # Step 2: Interpolation Generation
+    print(f"\n开始插值生成...")
+    print(f"输入文件夹: {args.folder_path}")
+    print(f"起始帧索引: {args.start_frame} (排序后文件列表的索引，从0开始)")
+    print(f"结束帧索引: {args.end_frame} (排序后文件列表的索引，从0开始)")
+    print(f"插值帧数: {args.num_interpolate}")
+    print(f"插值方法: {args.method}")
+    
     if not step2_interpolation(
         args.folder_path, 
         args.start_frame, 
         args.end_frame, 
         args.num_interpolate, 
         output_paths, 
-        args.method,
-        args.texture,
-        args.vertex_colors
+        args.method
     ):
-        print("Interpolation Generation failed, exiting...")
+        print("插值生成失败，退出...")
         return
     
     total_time = time.time() - total_start_time
@@ -379,10 +375,27 @@ def main():
     print(f"Output Directory: {output_paths['base']}")
     print(f"Interpolation Results: {output_paths['interpolation']}")
     
-    if args.texture or args.vertex_colors:
-        print(f"Texture Processing: Enabled")
-        print(f"  - Texture Files: {args.texture}")
-        print(f"  - Vertex Colors: {args.vertex_colors}")
+    if args.result_path:
+        interpolation_dir = os.path.abspath(output_paths['interpolation'])
+        results = {
+            "input_folder": args.folder_path,
+            "start_frame": args.start_frame,
+            "end_frame": args.end_frame,
+            "num_interpolate": args.num_interpolate,
+            "method": args.method,
+            "results_path": args.result_path,
+            "status": "success",
+            "interpolated_folder": str(interpolation_dir),
+            "other_output_paths": {
+                "base": str(output_paths['base']),
+                "skeleton": str(output_paths['skeleton']),
+                "skinning": str(output_paths['skinning']),
+            }
+        }
+        with open(args.result_path, 'w') as f:
+            json.dump(results, f, indent=4)
+            
+        print(f"Results info saved to: {args.result_path}: {results}")
 
 if __name__ == "__main__":
     main() 

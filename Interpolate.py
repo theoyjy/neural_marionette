@@ -543,7 +543,7 @@ class VolumetricInterpolator:
     def generate_interpolated_frames(self, frame_start, frame_end, num_interpolate, 
                                    max_optimize_frames=5, optimize_weights=True, 
                                    output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3,
-                                   use_texture=False, use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
+                                   use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
         """
         生成插值帧
         
@@ -557,7 +557,6 @@ class VolumetricInterpolator:
             debug_frames: 调试帧列表
             smooth_mesh: 是否对网格进行平滑处理
             subdivide_iter: 细分迭代次数
-            use_texture: 是否生成纹理文件
             use_vertex_colors: 是否添加顶点颜色
             save_npy_files: 是否保存npy文件（通常不需要）
             save_standard_obj: 是否保存标准obj文件（避免重复）
@@ -588,9 +587,9 @@ class VolumetricInterpolator:
             
             Path(output_dir).mkdir(parents=True, exist_ok=True)
         
-        # 检查帧索引范围
+        # 检查帧索引范围（frame_start和frame_end是排序后文件列表的索引）
         if frame_start >= len(self.mesh_files) or frame_end >= len(self.mesh_files):
-            raise ValueError(f"Frame index out of range: {len(self.mesh_files)}")
+            raise ValueError(f"Frame index out of range: start_frame={frame_start}, end_frame={frame_end}, available frames={len(self.mesh_files)}")
         
         # 检查帧索引是否相等（不允许相等）
         if frame_start == frame_end:
@@ -600,6 +599,11 @@ class VolumetricInterpolator:
         actual_start = min(frame_start, frame_end)
         actual_end = max(frame_start, frame_end)
         is_reverse = frame_start > frame_end
+        
+        # 打印实际使用的文件信息
+        start_file = self.mesh_files[actual_start].name
+        end_file = self.mesh_files[actual_end].name
+        print(f"  - Using files: {start_file} (index {actual_start}) -> {end_file} (index {actual_end})")
         
         # 生成插值参数
         t_values = np.linspace(0, 1, num_interpolate + 2)[1:-1]  # 排除起始和结束帧
@@ -843,6 +847,11 @@ class VolumetricInterpolator:
         if reference_vertex_colors is not None:
             interpolated_mesh.vertex_colors = o3d.utility.Vector3dVector(reference_vertex_colors)
             print(f"✅ 保留原始顶点颜色到插值mesh")
+        
+        # 确保有法线
+        if not interpolated_mesh.has_vertex_normals():
+            interpolated_mesh.compute_vertex_normals()
+            print(f"✅ 计算插值mesh的顶点法线")
         
         # 可选的网格平滑处理
         if smooth_mesh:
@@ -1201,7 +1210,7 @@ class DualReferenceInterpolator(VolumetricInterpolator):
     def generate_interpolated_frames(self, frame_start, frame_end, num_interpolate, 
                                    max_optimize_frames=5, optimize_weights=True, 
                                    output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3,
-                                   use_texture=False, use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
+                                   use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
         """
         使用双参考帧方法生成插值帧
         """
@@ -1212,6 +1221,10 @@ class DualReferenceInterpolator(VolumetricInterpolator):
         print(f"  - End frame: {frame_end}")
         print(f"  - Interpolation frames: {num_interpolate}")
         
+        # 检查帧索引范围（frame_start和frame_end是排序后文件列表的索引）
+        if frame_start >= len(self.mesh_files) or frame_end >= len(self.mesh_files):
+            raise ValueError(f"Frame index out of range: start_frame={frame_start}, end_frame={frame_end}, available frames={len(self.mesh_files)}")
+        
         # 检查帧索引是否相等（不允许相等）
         if frame_start == frame_end:
             raise ValueError(f"Start frame cannot be equal to end frame: {frame_start} == {frame_end}")
@@ -1220,6 +1233,11 @@ class DualReferenceInterpolator(VolumetricInterpolator):
         actual_start = min(frame_start, frame_end)
         actual_end = max(frame_start, frame_end)
         is_reverse = frame_start > frame_end
+        
+        # 打印实际使用的文件信息
+        start_file = self.mesh_files[actual_start].name
+        end_file = self.mesh_files[actual_end].name
+        print(f"  - Using files: {start_file} (index {actual_start}) -> {end_file} (index {actual_end})")
         
         # 设置输出目录
         if output_dir:
@@ -1246,7 +1264,7 @@ class DualReferenceInterpolator(VolumetricInterpolator):
                 return super().generate_interpolated_frames(
                     frame_start, frame_end, num_interpolate, 
                     max_optimize_frames, False, output_dir, debug_frames, smooth_mesh, subdivide_iter,
-                    use_texture, use_vertex_colors, save_npy_files, save_standard_obj
+                    use_vertex_colors, save_npy_files, save_standard_obj
                 )
             
             optimization_time = time.time() - optimization_start
@@ -1461,7 +1479,7 @@ class AdaptiveSimilarityInterpolator(VolumetricInterpolator):
     def generate_interpolated_frames(self, frame_start, frame_end, num_interpolate, 
                                    max_optimize_frames=5, optimize_weights=True, 
                                    output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3,
-                                   use_texture=False, use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
+                                   use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
         """
         使用相似帧自适应方法生成插值帧
         
@@ -1477,6 +1495,10 @@ class AdaptiveSimilarityInterpolator(VolumetricInterpolator):
         print(f"  - End frame: {frame_end}")
         print(f"  - Interpolation frames: {num_interpolate}")
         
+        # 检查帧索引范围（frame_start和frame_end是排序后文件列表的索引）
+        if frame_start >= len(self.mesh_files) or frame_end >= len(self.mesh_files):
+            raise ValueError(f"Frame index out of range: start_frame={frame_start}, end_frame={frame_end}, available frames={len(self.mesh_files)}")
+        
         # 检查帧索引是否相等（不允许相等）
         if frame_start == frame_end:
             raise ValueError(f"Start frame cannot be equal to end frame: {frame_start} == {frame_end}")
@@ -1485,6 +1507,11 @@ class AdaptiveSimilarityInterpolator(VolumetricInterpolator):
         actual_start = min(frame_start, frame_end)
         actual_end = max(frame_start, frame_end)
         is_reverse = frame_start > frame_end
+        
+        # 打印实际使用的文件信息
+        start_file = self.mesh_files[actual_start].name
+        end_file = self.mesh_files[actual_end].name
+        print(f"  - Using files: {start_file} (index {actual_start}) -> {end_file} (index {actual_end})")
         
         # 设置输出目录
         if output_dir:
@@ -2122,7 +2149,7 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
     def generate_interpolated_frames(self, frame_start, frame_end, num_interpolate, 
                                    max_optimize_frames=5, optimize_weights=True, 
                                    output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3,
-                                   use_texture=False, use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
+                                   use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
         """
         使用Neural Marionette方法生成插值帧
         """
@@ -2133,6 +2160,10 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
         print(f"  - End frame: {frame_end}")
         print(f"  - Interpolation frames: {num_interpolate}")
         
+        # 检查帧索引范围（frame_start和frame_end是排序后文件列表的索引）
+        if frame_start >= len(self.mesh_files) or frame_end >= len(self.mesh_files):
+            raise ValueError(f"Frame index out of range: start_frame={frame_start}, end_frame={frame_end}, available frames={len(self.mesh_files)}")
+        
         # 检查帧索引是否相等（不允许相等）
         if frame_start == frame_end:
             raise ValueError(f"Start frame cannot be equal to end frame: {frame_start} == {frame_end}")
@@ -2141,6 +2172,11 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
         actual_start = min(frame_start, frame_end)
         actual_end = max(frame_start, frame_end)
         is_reverse = frame_start > frame_end
+        
+        # 打印实际使用的文件信息
+        start_file = self.mesh_files[actual_start].name
+        end_file = self.mesh_files[actual_end].name
+        print(f"  - Using files: {start_file} (index {actual_start}) -> {end_file} (index {actual_end})")
         
         # 检查网络是否初始化成功
         if self.network is None:

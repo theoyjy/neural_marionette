@@ -47,6 +47,17 @@ class EnhancedAdaptiveInterpolator:
         self.weights_path = Path(weights_path)
         self.output_dir = None
         
+        # 加载排序后的网格文件列表
+        self.mesh_files = sorted(list(self.mesh_folder_path.glob("*.obj")))
+        if len(self.mesh_files) == 0:
+            raise ValueError(f"在 {self.mesh_folder_path} 中未找到obj文件")
+        
+        print(f"✅ 增强版自适应插值器初始化完成")
+        print(f"  - 网格文件数量: {len(self.mesh_files)}")
+        print(f"  - 相似性阈值: {self.similarity_threshold}")
+        print(f"  - 最大参考帧数: {self.max_reference_frames}")
+        print(f"  - 质量阈值: {self.quality_threshold}")
+        
         # 配置参数
         self.similarity_threshold = 0.8
         self.max_reference_frames = 4
@@ -57,19 +68,18 @@ class EnhancedAdaptiveInterpolator:
         self.frame_cache = {}
         self.similarity_cache = {}
         self.quality_metrics = {}
-        
-        print(f"✅ 增强版自适应插值器初始化完成")
-        print(f"  - 相似性阈值: {self.similarity_threshold}")
-        print(f"  - 最大参考帧数: {self.max_reference_frames}")
-        print(f"  - 质量阈值: {self.quality_threshold}")
     
     def load_frame_data(self, frame_idx: int) -> Dict:
         """加载帧数据（网格、骨骼、权重）"""
         if frame_idx in self.frame_cache:
             return self.frame_cache[frame_idx]
         
-        # 加载网格
-        mesh_file = self.mesh_folder_path / f"frame_{frame_idx:04d}.obj"
+        # 检查帧索引范围
+        if frame_idx >= len(self.mesh_files):
+            raise ValueError(f"帧索引超出范围: {frame_idx} >= {len(self.mesh_files)}")
+        
+        # 加载网格 - 使用排序后的文件列表
+        mesh_file = self.mesh_files[frame_idx]
         if not mesh_file.exists():
             raise FileNotFoundError(f"网格文件不存在: {mesh_file}")
         
@@ -409,12 +419,30 @@ class EnhancedAdaptiveInterpolator:
                                    max_optimize_frames: int = 5, optimize_weights: bool = True,
                                    output_dir: str = None, debug_frames: List[int] = None,
                                    smooth_mesh: bool = False, subdivide_iter: int = 3,
-                                   use_texture: bool = False, use_vertex_colors: bool = False) -> Dict:
+                                   use_vertex_colors: bool = False) -> Dict:
         """生成插值帧"""
         print(f"🚀 增强版自适应插值开始")
-        print(f"  - 起始帧: {frame_start}")
-        print(f"  - 结束帧: {frame_end}")
+        print(f"  - 起始帧索引: {frame_start}")
+        print(f"  - 结束帧索引: {frame_end}")
         print(f"  - 插值帧数: {num_interpolate}")
+        
+        # 检查帧索引范围（frame_start和frame_end是排序后文件列表的索引）
+        if frame_start >= len(self.mesh_files) or frame_end >= len(self.mesh_files):
+            raise ValueError(f"帧索引超出范围: start_frame={frame_start}, end_frame={frame_end}, 可用帧数={len(self.mesh_files)}")
+        
+        # 检查帧索引是否相等（不允许相等）
+        if frame_start == frame_end:
+            raise ValueError(f"起始帧不能等于结束帧: {frame_start} == {frame_end}")
+        
+        # 确定实际的起始和结束帧（支持反向插值）
+        actual_start = min(frame_start, frame_end)
+        actual_end = max(frame_start, frame_end)
+        is_reverse = frame_start > frame_end
+        
+        # 打印实际使用的文件信息
+        start_file = self.mesh_files[actual_start].name
+        end_file = self.mesh_files[actual_end].name
+        print(f"  - 使用文件: {start_file} (索引 {actual_start}) -> {end_file} (索引 {actual_end})")
         
         start_time = time.time()
         
@@ -424,7 +452,7 @@ class EnhancedAdaptiveInterpolator:
             self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # 获取可用帧
-        available_frames = list(range(frame_start, frame_end + 1))
+        available_frames = list(range(actual_start, actual_end + 1))
         print(f"  - 可用帧: {available_frames}")
         
         # 生成插值帧
@@ -433,7 +461,7 @@ class EnhancedAdaptiveInterpolator:
         
         for i in range(num_interpolate):
             target_time = (i + 1) / (num_interpolate + 1)
-            target_frame = frame_start + target_time * (frame_end - frame_start)
+            target_frame = actual_start + target_time * (actual_end - actual_start)
             
             print(f"\n🎯 生成插值帧 {i+1}/{num_interpolate} (时间: {target_time:.3f})")
             
