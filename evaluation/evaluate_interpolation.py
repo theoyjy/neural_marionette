@@ -98,17 +98,40 @@ def evaluate_single_pair(pair_info_path, method_results_dir, gt_data=None, no_gt
                 gt_vertices = gt_data['vertices'][gt_frame_idx]
                 gt_normals = gt_data['normals'][gt_frame_idx] if 'normals' in gt_data else None
                 
+                # 处理顶点数不一致的情况
+                interpolated_verts = interpolated_vertices[i]
+                interpolated_norms = interpolated_normals[i]
+                
+                print(f"  GT vertices: {len(gt_vertices)}, Interpolated vertices: {len(interpolated_verts)}")
+                
+                # 对齐顶点用于比较
+                if len(gt_vertices) != len(interpolated_verts):
+                    print(f"  Aligning vertices for comparison ({len(gt_vertices)} vs {len(interpolated_verts)})")
+                    if gt_normals is not None:
+                        aligned_gt_vertices, aligned_interp_vertices, aligned_gt_normals, aligned_interp_normals = \
+                            align_vertices_for_comparison(gt_vertices, interpolated_verts, gt_normals, interpolated_norms)
+                    else:
+                        aligned_gt_vertices, aligned_interp_vertices = \
+                            align_vertices_for_comparison(gt_vertices, interpolated_verts)
+                        aligned_gt_normals, aligned_interp_normals = None, None
+                else:
+                    aligned_gt_vertices = gt_vertices
+                    aligned_interp_vertices = interpolated_verts
+                    aligned_gt_normals = gt_normals
+                    aligned_interp_normals = interpolated_norms
+                
                 # Chamfer距离
-                chamfer_dist = compute_chamfer_distance(gt_vertices, interpolated_vertices[i])
+                chamfer_dist = compute_chamfer_distance(aligned_gt_vertices, aligned_interp_vertices)
                 chamfer_distances.append(chamfer_dist)
                 
                 # 法向一致性
-                if gt_normals is not None:
-                    angles = compute_normal_consistency(gt_normals, interpolated_normals[i])
-                    normal_angles.append(np.mean(angles))
+                if aligned_gt_normals is not None and aligned_interp_normals is not None:
+                    angles = compute_normal_consistency(aligned_gt_normals, aligned_interp_normals)
+                    if len(angles) > 0:  # 只有在成功计算的情况下才添加
+                        normal_angles.append(np.mean(angles))
                 
                 # ARAP误差
-                arap_error = compute_arap_error(gt_vertices, interpolated_vertices[i])
+                arap_error = compute_arap_error(aligned_gt_vertices, aligned_interp_vertices)
                 arap_errors.append(arap_error)
         
         if chamfer_distances:
@@ -336,7 +359,7 @@ def evaluate_all_pairs(pairs_dir, results_dir, methods, gt_data=None, no_gt=Fals
         pair_name = pair_info_path.stem  # 例如 "pair_000"
         
         for method in methods:
-            evaluation_output_dir = Path(results_dir) / method / database_name / f"{subject_id}_{sequence_id}_k{k_val}" / pair_name / "intp"
+            evaluation_output_dir = Path(results_dir) / database_name / f"{subject_id}_{sequence_id}_k{k_val}" / pair_name /  method 
             if evaluation_output_dir.exists():
                 # 检查是否有实际的插值结果文件
                 obj_files = list(evaluation_output_dir.glob("*.obj"))
@@ -359,52 +382,48 @@ def evaluate_all_pairs(pairs_dir, results_dir, methods, gt_data=None, no_gt=Fals
         
         for method in methods:
             # 查找插值结果目录  
-            # 新的路径结构: results_dir/method/database_name/subjectid_sequenceid_k{k_val}/pair_name/intp/
+            # 新的路径结构: results_dir/database_name/subjectid_sequenceid_k{k_val}/pair_name/method
             output_dir = Path(results_dir)
             interpolation_dir = None
             
             if output_dir.exists():
                 # 新的路径结构，包含k值和pair-specific子目录
-                evaluation_output_dir = Path(results_dir) / method / database_name / f"{subject_id}_{sequence_id}_k{k_val}" / pair_name / "intp"
-                print(f"Evaluation output directory: {evaluation_output_dir}")
-                if evaluation_output_dir.exists():
-                    # 查找所有可能的插值目录（因为start_frame和end_frame可能不同）
-                    interpolation_method_dir = evaluation_output_dir
-                    print(f"Interpolation method directory: {interpolation_method_dir}")
-                    if interpolation_method_dir.exists():
-                        # 查找所有形如 "X_Y_Z" 的子目录，也检查直接在intp目录下的文件
-                        pattern_dirs = list(interpolation_method_dir.glob("*_*_*"))
-                        if not pattern_dirs:
-                            # 如果没有找到子目录，检查intp目录本身
-                            pattern_dirs = [interpolation_method_dir]
-                        print(f"Pattern directories: {pattern_dirs}")
-                        for potential_dir in pattern_dirs:
-                            # 检查是否有插值结果文件
-                            obj_files = []
-                            
-                            if potential_dir.is_file() and potential_dir.suffix == '.obj':
-                                # 如果pattern_dirs包含了直接的obj文件
-                                obj_files = [potential_dir]
-                                interpolation_dir = potential_dir.parent
-                            else:
-                                # 如果是目录，查找其中的obj文件
-                                obj_files = list(potential_dir.glob("frame_*_with_colors.obj"))
-                                if not obj_files:
-                                    # 也尝试查找其他可能的文件名，包括interpolated_frame_*.obj
-                                    obj_files = list(potential_dir.glob("interpolated_frame_*.obj"))
-                                if not obj_files:
-                                    obj_files = list(potential_dir.glob("*.obj"))
-                                    obj_files = [f for f in obj_files if "start_frame" not in f.name and "end_frame" not in f.name]
-                                
-                                if obj_files:
-                                    interpolation_dir = potential_dir
+                interpolation_method_dir = Path(results_dir) / database_name / f"{subject_id}_{sequence_id}_k{k_val}" / pair_name / method
+                print(f"Interpolation method directory: {interpolation_method_dir}")
+                if interpolation_method_dir.exists():
+                    # 查找所有形如 "X_Y_Z" 的子目录，也检查直接在method目录下的文件
+                    pattern_dirs = list(interpolation_method_dir.glob("*_*_*"))
+                    if not pattern_dirs:
+                        # 如果没有找到子目录，检查method目录本身
+                        pattern_dirs = [interpolation_method_dir]
+                    print(f"Pattern directories: {pattern_dirs}")
+                    for potential_dir in pattern_dirs:
+                        # 检查是否有插值结果文件
+                        obj_files = []
+                        
+                        if potential_dir.is_file() and potential_dir.suffix == '.obj':
+                            # 如果pattern_dirs包含了直接的obj文件
+                            obj_files = [potential_dir]
+                            interpolation_dir = potential_dir.parent
+                        else:
+                            # 如果是目录，查找其中的obj文件
+                            obj_files = list(potential_dir.glob("frame_*_with_colors.obj"))
+                            if not obj_files:
+                                # 也尝试查找其他可能的文件名，包括interpolated_frame_*.obj
+                                obj_files = list(potential_dir.glob("interpolated_frame_*.obj"))
+                            if not obj_files:
+                                obj_files = list(potential_dir.glob("*.obj"))
+                                obj_files = [f for f in obj_files if "start_frame" not in f.name and "end_frame" not in f.name]
                             
                             if obj_files:
-                                print(f"  {method}: Found {len(obj_files)} interpolated files (evaluation mode) in {interpolation_dir.name}")
-                                break
+                                interpolation_dir = potential_dir
                         
-                        if interpolation_dir:
-                            print(f"  {method}: Found interpolation directory: {interpolation_dir}")                
+                        if obj_files:
+                            print(f"  {method}: Found {len(obj_files)} interpolated files (evaluation mode) in {interpolation_dir.name}")
+                            break
+                    
+                    if interpolation_dir:
+                        print(f"  {method}: Found interpolation directory: {interpolation_dir}")                
                 
                 if interpolation_dir is None:
                     print(f"  {method}: Result directory does not exist")
@@ -490,7 +509,7 @@ def main():
                        default="evaluation/data/dfaust/keyframe_pairs", 
                        help="Keyframe pairs directory (如果指定具体路径，应包含database_name/subject_sequence子目录)")
     parser.add_argument("--results_dir", type=str, 
-                       default="evaluation/results",
+                       default="evaluation/interpolation",
                        help="Interpolation results directory")
     parser.add_argument("--methods", nargs="+", 
                        default=["baseline", "dual_reference"],
@@ -514,14 +533,6 @@ def main():
     
     args = parser.parse_args()
     
-    # 从hdf5路径提取数据库名
-    if not hasattr(args, 'database_name') or not args.database_name:
-        hdf5_filename = Path(args.gt_hdf5).stem
-        if "registrations_" in hdf5_filename:
-            args.database_name = "dfaust"
-        else:
-            args.database_name = hdf5_filename.split("_")[0] if "_" in hdf5_filename else "unknown"
-    
     # 加载GT数据
     gt_data = None
     if not args.no_gt:
@@ -536,14 +547,8 @@ def main():
     
     # 处理具体的database/subject_sequence路径，与run_interpolation.py保持一致
     pairs_dir = Path(args.pairs_dir)
-    if args.database_name and args.subject_id and args.sequence_id:
-        specific_pairs_dir = pairs_dir / args.database_name / f"{args.subject_id}_{args.sequence_id}"
-        if specific_pairs_dir.exists():
-            pairs_dir = specific_pairs_dir
-        else:
-            print(f"警告: 具体路径不存在 {specific_pairs_dir}，使用默认路径 {pairs_dir}")
     
-    print(f"评估路径: evaluation/{args.database_name}/{args.subject_id}_{args.sequence_id}/")
+    print(f"评估保存结果路径: evaluation/{args.database_name}/{args.subject_id}_{args.sequence_id}/")
     print(f"实际pairs目录: {pairs_dir}")
     
     # 评估所有关键帧对

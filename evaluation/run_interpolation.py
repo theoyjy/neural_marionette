@@ -61,17 +61,13 @@ def run_interpolation_for_pair(pair_info_path, method, output_dir, database_name
         pair_name = pair_info_path.stem  # 例如 "pair_000"
         
         # 新的路径结构，包含k值和pair-specific子目录
-        method_output_dir = Path(output_dir) / method / database_name / f"{subject_id}_{sequence_id}_k{k_value}" / pair_name
+        method_output_dir = Path(output_dir) / database_name / f"{subject_id}_{sequence_id}_k{k_value}" / pair_name
     else:
         # 保持原有结构作为fallback
         pair_name = pair_info_path.stem
         method_output_dir = Path(output_dir) / method / pair_name
     
     method_output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 为评估模式设置插值结果输出到evaluation results目录
-    eval_interpolation_output = method_output_dir / "intp"
-    eval_interpolation_output.mkdir(parents=True, exist_ok=True)
     
     # 计算需要插值的帧数，为了节约时间，限制为最多5个中间帧
     # 原本应该是 k-1 个中间帧，现在改为 min(k-1, 5)
@@ -112,7 +108,7 @@ def run_interpolation_for_pair(pair_info_path, method, output_dir, database_name
         monitor.stop_monitoring()
         
         # 保存性能数据
-        performance_file = eval_interpolation_output / f"performance_{method}_{pair_name}.json"
+        performance_file = method_output_dir / f"performance_{method}_{pair_name}.json"
         performance_summary = monitor.save_performance_data(performance_file)
         
         if result.returncode == 0:
@@ -159,7 +155,7 @@ def main():
                        default="evaluation/data/dfaust/keyframe_pairs",
                        help="关键帧对目录 (如果指定具体路径，应包含database_name/subject_sequence子目录)")
     parser.add_argument("--output_dir", type=str, 
-                       default="evaluation/results",
+                       default="evaluation/interpolation",
                        help="结果输出目录")
     parser.add_argument("--methods", nargs="+", 
                        default=["baseline", "dual_reference"],

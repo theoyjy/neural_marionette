@@ -70,14 +70,21 @@ def setup_paths(folder_path, method="baseline", start_frame=0, end_frame=0, num_
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # 子目录 - 统一的结构
-        skeleton_dir = output_dir / "skeleton_prediction"
-        skinning_dir = output_dir / "skinning_weights"
+        sequence_name = output_dir.parent.stem
+        components = sequence_name.split('_')
+        sub_seq_name = '_'.join(components[:-1])
+
+        new_out_dir = output_dir.parent.parent / f"{sub_seq_name}"
+        new_out_dir.mkdir(parents=True, exist_ok=True)
+
+        skeleton_dir = new_out_dir / "skeleton_prediction"
+        skinning_dir = new_out_dir / "skinning_weights"
         
         skeleton_dir.mkdir(exist_ok=True)
         skinning_dir.mkdir(exist_ok=True)
         
         # 插值结果目录 - 按方法区分
-        interpolation_dir = output_dir / f"intp"
+        interpolation_dir = output_dir / f"{method}"
         interpolation_dir.mkdir(exist_ok=True)
         
         print(f"Evaluation Mode Output Directory:")

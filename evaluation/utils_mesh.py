@@ -31,8 +31,59 @@ def compute_chamfer_distance(vertices_a, vertices_b, k=1):
     chamfer_dist = (np.mean(dist_a_to_b) + np.mean(dist_b_to_a)) * 0.5
     return chamfer_dist
 
+def align_vertices_for_comparison(vertices_a, vertices_b, normals_a=None, normals_b=None):
+    """
+    对齐两个顶点集合用于比较，处理顶点数量不一致的情况
+    使用最近邻匹配来对齐顶点
+    """
+    if len(vertices_a) == len(vertices_b):
+        # 如果顶点数相同，直接返回
+        if normals_a is not None and normals_b is not None:
+            return vertices_a, vertices_b, normals_a, normals_b
+        else:
+            return vertices_a, vertices_b
+    
+    # 使用较少顶点数的作为参考
+    if len(vertices_a) <= len(vertices_b):
+        ref_vertices = vertices_a
+        target_vertices = vertices_b
+        ref_normals = normals_a
+        target_normals = normals_b
+        swap = False
+    else:
+        ref_vertices = vertices_b
+        target_vertices = vertices_a
+        ref_normals = normals_b
+        target_normals = normals_a
+        swap = True
+    
+    # 使用KD树找到最近邻对应关系
+    tree = cKDTree(target_vertices)
+    distances, indices = tree.query(ref_vertices, k=1)
+    
+    # 提取对应的顶点和法向量
+    aligned_target_vertices = target_vertices[indices]
+    aligned_target_normals = target_normals[indices] if target_normals is not None else None
+    
+    if swap:
+        # 如果交换了顺序，需要交换回来
+        if normals_a is not None and normals_b is not None:
+            return aligned_target_vertices, ref_vertices, aligned_target_normals, ref_normals
+        else:
+            return aligned_target_vertices, ref_vertices
+    else:
+        if normals_a is not None and normals_b is not None:
+            return ref_vertices, aligned_target_vertices, ref_normals, aligned_target_normals
+        else:
+            return ref_vertices, aligned_target_vertices
+
 def compute_normal_consistency(normals_a, normals_b):
     """计算法向一致性（夹角）"""
+    # 检查顶点数是否一致，如果不一致则跳过计算
+    if len(normals_a) != len(normals_b):
+        print(f"Warning: Normal arrays have different sizes ({len(normals_a)} vs {len(normals_b)}), skipping normal consistency computation")
+        return np.array([])
+    
     # 归一化法向量
     normals_a_norm = normals_a / (np.linalg.norm(normals_a, axis=1, keepdims=True) + 1e-8)
     normals_b_norm = normals_b / (np.linalg.norm(normals_b, axis=1, keepdims=True) + 1e-8)
@@ -48,6 +99,11 @@ def compute_normal_consistency(normals_a, normals_b):
 
 def compute_arap_error(vertices_a, vertices_b, influence_weights=None):
     """计算ARAP（As-Rigid-As-Possible）误差"""
+    # 处理顶点数不一致的情况
+    if len(vertices_a) != len(vertices_b):
+        print(f"Warning: Vertex arrays have different sizes ({len(vertices_a)} vs {len(vertices_b)}), aligning vertices for ARAP computation")
+        vertices_a, vertices_b = align_vertices_for_comparison(vertices_a, vertices_b)
+    
     if influence_weights is None:
         # 如果没有权重，使用均匀权重
         influence_weights = np.ones(len(vertices_a))

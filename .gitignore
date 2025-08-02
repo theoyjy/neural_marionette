@@ -7,3 +7,5 @@ output/
 /evaluation/data
 /evaluation/baseline
 /evaluation/dual_reference
+/evaluation/interpolation
+/evaluation/results

@@ -85,16 +85,17 @@ class BatchEvaluator:
                 
                 # 尝试解析最终报告中的信息
                 try:
-                    final_report = Path("evaluation/results/final_pipeline_report.md")
+                    database_name = Path(hdf5_path).stem
+                    final_report = Path("evaluation/results") / database_name /f"{subject_id}_{sequence_id}_k{k} / final_pipeline_report.md"
                     if final_report.exists():
                         with open(final_report, 'r', encoding='utf-8') as f:
                             content = f.read()
                         eval_result['final_report'] = content
                 except Exception as e:
-                    print(f"⚠️ 无法读取最终报告: {e}")
+                    print(f"无法读取最终报告: {e}")
                     
             else:
-                print(f"❌ 评估失败 (返回码: {result.returncode}, 耗时: {duration:.1f}秒)")
+                print(f"评估失败 (返回码: {result.returncode}, 耗时: {duration:.1f}秒)")
                 print(f"错误输出:\n{result.stderr}")
             
             return success
@@ -186,11 +187,11 @@ class BatchEvaluator:
         total_tests = len(test_sequences) * len(k_values)
         print(f"总测试数量: {total_tests}")
         
-        if not test_mode and total_tests > 100:
-            confirm = input(f"将要运行 {total_tests} 个测试，这可能需要很长时间。继续吗？(y/N): ")
-            if confirm.lower() != 'y':
-                print("用户取消评估")
-                return
+        # if not test_mode and total_tests > 100:
+        #     confirm = input(f"将要运行 {total_tests} 个测试，这可能需要很长时间。继续吗？(y/N): ")
+        #     if confirm.lower() != 'y':
+        #         print("用户取消评估")
+        #         return
         
         # 运行评估
         test_count = 0

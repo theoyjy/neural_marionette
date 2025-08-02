@@ -186,15 +186,7 @@ class VolumetricInterpolator:
             
             # Unify weight file naming format
             weights_filename = f"ref{frame_start}_opt{optimize_frames[0]}-{optimize_frames[-1]}_num{len(optimize_frames)}.npz"
-            
-            # Ensure using unified skinning_weights directory - fix path generation logic
-            # Always use skinning_weights folder in the base output directory
-            if hasattr(self, 'output_dir') and self.output_dir:
-                # Use unified skinning_weights directory
-                weights_path = Path(self.output_dir) / "skinning_weights" / weights_filename
-            else:
-                # Otherwise use default path
-                weights_path = Path("output") / "skinning_weights" / weights_filename
+            weights_path = Path(self.weights_path) / weights_filename
             
             print(f"  - Weights File Path: {weights_path}")
             
@@ -1188,13 +1180,7 @@ class DualReferenceInterpolator(VolumetricInterpolator):
             # 统一权重文件命名格式
             reference_frame = frame_start if frame_type == "start" else frame_end
             weights_filename = f"ref{reference_frame}_opt{optimize_frames[0]}-{optimize_frames[-1]}_num{len(optimize_frames)}.npz"
-            
-            # 检查是否已存在权重文件 - 修复路径生成逻辑
-            if hasattr(self, 'output_dir') and self.output_dir:
-                # 使用统一的skinning_weights目录
-                weights_path = Path(self.output_dir) / "skinning_weights" / weights_filename
-            else:
-                weights_path = Path("output") / "skinning_weights" / weights_filename
+            weights_path = Path(self.weights_path) / weights_filename
             
             if weights_path.exists():
                 print(f"  - Found existing weights file: {weights_path}")
@@ -1616,12 +1602,7 @@ class AdaptiveSimilarityInterpolator(VolumetricInterpolator):
                         
                         # 统一权重文件命名格式
                         weights_filename = f"ref{most_similar_frame}_opt{optimize_frames[0]}-{optimize_frames[-1]}_num{len(optimize_frames)}.npz"
-                        
-                        # 检查是否已存在权重文件 - 使用统一的skinning_weights目录
-                        if hasattr(self, 'output_dir') and self.output_dir:
-                            weights_path = Path(self.output_dir) / "skinning_weights" / weights_filename
-                        else:
-                            weights_path = Path("output") / "skinning_weights" / weights_filename
+                        weights_path = Path(self.weights_path) / weights_filename
                         
                         if weights_path.exists():
                             print(f"    Found existing weights file: {weights_path}")

@@ -100,7 +100,7 @@ def step2_run_interpolation(args):
     cmd = [
         args.python_path, "evaluation/run_interpolation.py",
         "--pairs_dir", pairs_dir,
-        "--output_dir", "evaluation",  # 修改输出目录为evaluation
+        "--output_dir", "evaluation/interpolation",  # 修改输出目录为evaluation
         "--methods", "baseline", "dual_reference",
         "--max_pairs", str(args.max_pairs) if args.max_pairs else "3",
         "--database_name", database_name,
@@ -117,12 +117,12 @@ def step3_evaluate_results(args):
     database_name = Path(args.gt_hdf5).stem
     
     # 构建具体的keyframe_pairs路径，包含k值
-    pairs_dir = f"evaluation/data/dfaust/keyframe_pairs/{database_name}/{args.subject_id}_{args.sequence_id}_k{args.k}"
+    pairs_dir = f"evaluation/data/dfaust/keyframe_pairs/{database_name}/{args.subject_id}_{args.sequence_id}"
     
     cmd = [
         args.python_path, "evaluation/evaluate_interpolation.py",
         "--pairs_dir", pairs_dir,
-        "--results_dir", "evaluation",  # 修改为新的结果目录
+        "--results_dir", "evaluation/interpolation",  # 修改为新的结果目录
         "--methods", "baseline", "dual_reference",
         "--output_dir", str(args.individual_results_dir),
         "--database_name", database_name
@@ -168,7 +168,7 @@ def step5_compare_methods(args):
     
     return run_step("对比方法", cmd)
 
-def generate_final_report():
+def generate_final_report(args):
     """生成最终报告"""
     report = []
     report.append("# 插值评估流水线最终报告\n\n")
@@ -220,7 +220,7 @@ def generate_final_report():
     report.append("- ✅ 优化为可在16GB RAM单GPU环境下1分钟内完成30帧测试序列评估\n")
     
     # 保存报告
-    report_path = Path("evaluation/results/final_pipeline_report.md")
+    report_path = args.individual_results_dir / "final_pipeline_report.md"
     with open(report_path, 'w', encoding='utf-8') as f:
         f.writelines(report)
     
@@ -265,10 +265,7 @@ def main():
     
     # 创建独立的结果目录，避免文件被重写，包含k值和GT模式信息
     database_name = Path(args.gt_hdf5).stem
-    eval_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    gt_mode = "nogt" if args.no_gt else "gt"
-    eval_id = f"{args.subject_id}_{args.sequence_id}_k{args.k}_{gt_mode}_{eval_timestamp}"
-    individual_results_dir = Path("evaluation/results") / database_name / eval_id
+    individual_results_dir = Path("evaluation/results") / database_name /f"{args.subject_id}_{args.sequence_id}_k{args.k}"
     individual_results_dir.mkdir(parents=True, exist_ok=True)
     
     # 将individual_results_dir添加到args中
@@ -283,9 +280,9 @@ def main():
     steps = [
         (1, "生成关键帧对", lambda: step1_generate_keyframes(args)),
         (2, "运行插值", lambda: step2_run_interpolation(args)),
-        (3, "评估结果", lambda: step3_evaluate_results(args)),
-        (4, "可视化结果", lambda: step4_visualize_results(args)),
-        (5, "对比方法", lambda: step5_compare_methods(args))
+        # (3, "评估结果", lambda: step3_evaluate_results(args)),
+        # (4, "可视化结果", lambda: step4_visualize_results(args)),
+        # (5, "对比方法", lambda: step5_compare_methods(args))
     ]
     
     success_count = 0
@@ -302,7 +299,7 @@ def main():
             print(f"FAILED 步骤 {step_num} 失败，但继续执行后续步骤")
     
     # 生成最终报告
-    generate_final_report()
+    generate_final_report(args)
     
     # 计算总耗时
     pipeline_end_time = time.time()
