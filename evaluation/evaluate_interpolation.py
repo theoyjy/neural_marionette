@@ -14,19 +14,20 @@ import time
 import glob
 from utils_mesh import *
 
-def evaluate_single_pair(pair_dir, method_results_dir, gt_data=None, no_gt=False):
+def evaluate_single_pair(pair_info_path, method_results_dir, gt_data=None, no_gt=False):
     """评估单个关键帧对的插值结果"""
     results = {}
     print(f"Evaluate single pair: {method_results_dir}")
-    # 加载skeleton信息
-    skeleton_path = pair_dir / "skeleton.json"
-    if skeleton_path.exists():
-        skeleton_info = load_skeleton_info(skeleton_path)
-        parents = np.array(skeleton_info['parents'])
-        gt_frame_indices = skeleton_info.get('gt_frame_indices', [])
-    else:
-        parents = None
-        gt_frame_indices = []
+    
+    # 读取pair信息
+    with open(pair_info_path, 'r') as f:
+        pair_info = json.load(f)
+    
+    # 获取skeleton信息
+    parents = np.array(pair_info['parents'])
+    gt_frame_indices = pair_info.get('gt_frame_indices', [])
+    start_idx = pair_info['start_idx']
+    end_idx = pair_info['end_idx']
     
     # 查找插值结果文件
     # 插值脚本生成的文件名格式是 frame_*_with_colors.obj
@@ -56,17 +57,46 @@ def evaluate_single_pair(pair_dir, method_results_dir, gt_data=None, no_gt=False
         interpolated_meshes.append(mesh)
     
     # 3.1 几何误差（需真实中间帧）
-    if not no_gt and gt_data is not None and len(gt_frame_indices) > 0:
+    if not no_gt and gt_data is not None:
         chamfer_distances = []
         normal_angles = []
         arap_errors = []
-                
-        # 使用索引从原始数据中获取真实帧
-        for i, frame_idx in enumerate(gt_frame_indices):
-            print(f"Processing gt frame index: {frame_idx}")
-            if frame_idx < gt_data['vertices'].shape[0] and i < len(interpolated_vertices):
-                gt_vertices = gt_data['vertices'][frame_idx]
-                gt_normals = gt_data['normals'][frame_idx] if 'normals' in gt_data else None
+        
+        # 计算真正的中间帧索引 (start_idx+1 到 end_idx-1)
+        true_middle_frames = list(range(start_idx + 1, end_idx))
+        num_interpolated = len(interpolated_vertices)
+        num_gt_frames = len(true_middle_frames)
+        
+        print(f"插值帧数: {num_interpolated}, GT中间帧数: {num_gt_frames}")
+        print(f"GT中间帧索引: {true_middle_frames}")
+        
+        # 使用与插值生成相同的逻辑来计算对应的GT帧索引
+        # 插值生成逻辑: t_values = np.linspace(0, 1, num_interpolate + 2)[1:-1]
+        t_values = np.linspace(0, 1, num_interpolated + 2)[1:-1]  # 与插值生成保持一致
+        
+        selected_gt_indices = []
+        for i, t in enumerate(t_values):
+            # 根据t值计算在GT帧序列中的位置
+            # t=0对应start_idx+1（第一个中间帧），t=1对应end_idx-1（最后一个中间帧）
+            gt_frame_position = start_idx + 1 + t * (num_gt_frames - 1)
+            
+            # 四舍五入找最接近的整数帧
+            gt_frame_idx = int(round(gt_frame_position))
+            
+            # 确保索引在有效范围内
+            gt_frame_idx = max(start_idx + 1, min(end_idx - 1, gt_frame_idx))
+            selected_gt_indices.append(gt_frame_idx)
+        
+        print(f"插值t值: {t_values}")
+        print(f"对应GT帧位置: {[start_idx + 1 + t * (num_gt_frames - 1) for t in t_values]}")
+        print(f"四舍五入后的GT帧索引: {selected_gt_indices}")
+        
+        # 使用选择的GT帧进行评估
+        for i, gt_frame_idx in enumerate(selected_gt_indices):
+            print(f"Processing interpolated frame {i} vs GT frame {gt_frame_idx} (t={t_values[i]:.3f})")
+            if gt_frame_idx < gt_data['vertices'].shape[0] and i < len(interpolated_vertices):
+                gt_vertices = gt_data['vertices'][gt_frame_idx]
+                gt_normals = gt_data['normals'][gt_frame_idx] if 'normals' in gt_data else None
                 
                 # Chamfer距离
                 chamfer_dist = compute_chamfer_distance(gt_vertices, interpolated_vertices[i])
@@ -80,7 +110,6 @@ def evaluate_single_pair(pair_dir, method_results_dir, gt_data=None, no_gt=False
                 # ARAP误差
                 arap_error = compute_arap_error(gt_vertices, interpolated_vertices[i])
                 arap_errors.append(arap_error)
-       
         
         if chamfer_distances:
             results['mean_chamfer'] = np.mean(chamfer_distances)
@@ -129,7 +158,8 @@ def evaluate_single_pair(pair_dir, method_results_dir, gt_data=None, no_gt=False
     results['num_frames'] = len(interpolated_vertices)
     
     # 5. 读取性能数据
-    performance_data = load_performance_data(method_results_dir, pair_dir.name)
+    pair_name = Path(pair_info_path).stem  # 例如 "pair_000"
+    performance_data = load_performance_data(method_results_dir, pair_name)
     if performance_data:
         results.update(performance_data)
     
@@ -227,43 +257,86 @@ def load_gt_data(hdf5_path, subject_id, sequence_id):
         print(f"Load GT data failed: {e}")
         return None
 
-def evaluate_all_pairs(pairs_dir, results_dir, methods, gt_data=None, no_gt=False, database_name="dfaust", subject_id="50002", sequence_id="jumping_jacks"):
+def evaluate_all_pairs(pairs_dir, results_dir, methods, gt_data=None, no_gt=False, database_name="dfaust", subject_id="50002", sequence_id="jumping_jacks", k_value=None):
     """Evaluate all keyframe pairs"""
     all_results = []
     
+    # 查找k值子目录
+    pairs_dir = Path(pairs_dir)
+    k_dir = None
+    
+    if k_value:
+        # 如果指定了k值，搜索包含该k值的目录
+        k_pattern = f"k{k_value}"
+        
+        # 搜索可能的路径结构
+        possible_paths = []
+        
+        # 1. 直接在pairs_dir下查找
+        direct_k_dir = pairs_dir / k_pattern
+        if direct_k_dir.exists():
+            possible_paths.append(direct_k_dir)
+        
+        # 2. 在database/subject_sequence子目录下查找
+        for db_dir in pairs_dir.iterdir():
+            if db_dir.is_dir():
+                for subject_dir in db_dir.iterdir():
+                    if subject_dir.is_dir():
+                        nested_k_dir = subject_dir / k_pattern
+                        if nested_k_dir.exists():
+                            possible_paths.append(nested_k_dir)
+        
+        if possible_paths:
+            k_dir = possible_paths[0]  # 使用第一个找到的
+            print(f"找到k{k_value}目录: {k_dir}")
+        else:
+            print(f"错误: 指定的k值目录不存在 k{k_value}")
+            return []
+    else:
+        # 查找所有k值子目录
+        k_dirs = []
+        
+        # 在所有子目录中搜索k值目录
+        for root_path in pairs_dir.rglob("k*"):
+            if root_path.is_dir() and root_path.name.startswith('k') and root_path.name[1:].isdigit():
+                k_dirs.append(root_path)
+        
+        if not k_dirs:
+            print(f"错误: 在 {pairs_dir} 及其子目录中未找到k值子目录")
+            return []
+        # 使用第一个找到的k值目录
+        k_dir = k_dirs[0]
+    
+    print(f"使用k值目录: {k_dir}")
+    
     # 读取关键帧对索引
     import json
-    pairs_index_file = Path(pairs_dir) / "pairs_index.json"
+    pairs_index_file = k_dir / "pairs_index.json"
     if pairs_index_file.exists():
         with open(pairs_index_file, 'r') as f:
             pairs_index = json.load(f)
-        pair_dirs = [Path(p) for p in pairs_index['pair_dirs']]
+        pair_info_paths = [Path(p) for p in pairs_index['pair_info_paths']]
     else:
-        # 如果没有索引文件，扫描目录
-        pair_dirs = [d for d in Path(pairs_dir).iterdir() if d.is_dir() and d.name.startswith("pair_")]
-        pair_dirs.sort()
+        # 如果没有索引文件，扫描k_dir中的pair_xxx.json文件
+        pair_info_paths = list(k_dir.glob("pair_*.json"))
+        pair_info_paths.sort()
     
-    print(f"Start evaluating {len(pair_dirs)} keyframe pairs")
+    print(f"Start evaluating {len(pair_info_paths)} keyframe pairs")
     
     # 先检查哪些pairs实际有插值结果
     available_pairs = []
-    for pair_dir in pair_dirs:
+    
+    # 从k_dir推断k值
+    k_dir_name = k_dir.name  # 例如 "k15"
+    k_val = int(k_dir_name[1:]) if k_dir_name.startswith('k') else 10  # 提取k值
+    
+    for pair_info_path in pair_info_paths:
         # 检查是否至少有一个方法的结果存在
         has_results = False
+        pair_name = pair_info_path.stem  # 例如 "pair_000"
+        
         for method in methods:
-            # 从pairs_index.json获取k值
-            pairs_index_file = pair_dir.parent / "pairs_index.json"
-            k_value = 10  # 默认值
-            if pairs_index_file.exists():
-                try:
-                    import json
-                    with open(pairs_index_file, 'r') as f:
-                        pairs_info = json.load(f)
-                        k_value = pairs_info.get('k', 10)
-                except:
-                    pass
-            
-            evaluation_output_dir = Path("evaluation") / method / database_name / f"{subject_id}_{sequence_id}_k{k_value}" / pair_dir.name / "intp"
+            evaluation_output_dir = Path(results_dir) / method / database_name / f"{subject_id}_{sequence_id}_k{k_val}" / pair_name / "intp"
             if evaluation_output_dir.exists():
                 # 检查是否有实际的插值结果文件
                 obj_files = list(evaluation_output_dir.glob("*.obj"))
@@ -272,7 +345,7 @@ def evaluate_all_pairs(pairs_dir, results_dir, methods, gt_data=None, no_gt=Fals
                     break
         
         if has_results:
-            available_pairs.append(pair_dir)
+            available_pairs.append(pair_info_path)
     
     if not available_pairs:
         print("No interpolation results found. Make sure to run interpolation first.")
@@ -280,30 +353,19 @@ def evaluate_all_pairs(pairs_dir, results_dir, methods, gt_data=None, no_gt=Fals
     
     print(f"Found interpolation results for {len(available_pairs)} pairs")
     
-    for i, pair_dir in enumerate(available_pairs):
-        print(f"Evaluating keyframe pair {i+1}/{len(available_pairs)}: {pair_dir.name}")
+    for i, pair_info_path in enumerate(available_pairs):
+        pair_name = pair_info_path.stem  # 例如 "pair_000"
+        print(f"Evaluating keyframe pair {i+1}/{len(available_pairs)}: {pair_name}")
         
         for method in methods:
             # 查找插值结果目录  
-            # 新的路径结构: evaluation/method/database_name/subjectid_sequenceid/intp/
-            output_dir = Path("evaluation")
+            # 新的路径结构: results_dir/method/database_name/subjectid_sequenceid_k{k_val}/pair_name/intp/
+            output_dir = Path(results_dir)
             interpolation_dir = None
             
             if output_dir.exists():
-                # 从pairs_index.json获取k值
-                pairs_index_file = pair_dir.parent / "pairs_index.json"
-                k_value = 10  # 默认值
-                if pairs_index_file.exists():
-                    try:
-                        import json
-                        with open(pairs_index_file, 'r') as f:
-                            pairs_info = json.load(f)
-                            k_value = pairs_info.get('k', 10)
-                    except:
-                        pass
-                
                 # 新的路径结构，包含k值和pair-specific子目录
-                evaluation_output_dir = Path("evaluation") / method / database_name / f"{subject_id}_{sequence_id}_k{k_value}" / pair_dir.name / "intp"
+                evaluation_output_dir = Path(results_dir) / method / database_name / f"{subject_id}_{sequence_id}_k{k_val}" / pair_name / "intp"
                 print(f"Evaluation output directory: {evaluation_output_dir}")
                 if evaluation_output_dir.exists():
                     # 查找所有可能的插值目录（因为start_frame和end_frame可能不同）
@@ -350,10 +412,10 @@ def evaluate_all_pairs(pairs_dir, results_dir, methods, gt_data=None, no_gt=Fals
             
             print(f"  {method}: {interpolation_dir}")
             
-            results = evaluate_single_pair(pair_dir, interpolation_dir, gt_data, no_gt)
+            results = evaluate_single_pair(pair_info_path, interpolation_dir, gt_data, no_gt)
             
             if results:
-                results['pair_id'] = pair_dir.name
+                results['pair_id'] = pair_name
                 results['method'] = method
                 all_results.append(results)
                 print(f"  {method}: Completed")
@@ -447,6 +509,8 @@ def main():
                        help="DFAUST sequence ID")
     parser.add_argument("--database_name", type=str, default="dfaust",
                        help="数据库名称")
+    parser.add_argument("--k", type=int, default=None,
+                       help="指定k值（如果不指定，使用第一个找到的k值目录）")
     
     args = parser.parse_args()
     
@@ -470,11 +534,21 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True)
     
+    # 处理具体的database/subject_sequence路径，与run_interpolation.py保持一致
+    pairs_dir = Path(args.pairs_dir)
+    if args.database_name and args.subject_id and args.sequence_id:
+        specific_pairs_dir = pairs_dir / args.database_name / f"{args.subject_id}_{args.sequence_id}"
+        if specific_pairs_dir.exists():
+            pairs_dir = specific_pairs_dir
+        else:
+            print(f"警告: 具体路径不存在 {specific_pairs_dir}，使用默认路径 {pairs_dir}")
+    
     print(f"评估路径: evaluation/{args.database_name}/{args.subject_id}_{args.sequence_id}/")
+    print(f"实际pairs目录: {pairs_dir}")
     
     # 评估所有关键帧对
     start_time = time.time()
-    results = evaluate_all_pairs(args.pairs_dir, args.results_dir, args.methods, gt_data, args.no_gt, args.database_name, args.subject_id, args.sequence_id)
+    results = evaluate_all_pairs(str(pairs_dir), args.results_dir, args.methods, gt_data, args.no_gt, args.database_name, args.subject_id, args.sequence_id, args.k)
     end_time = time.time()
     
     print(f"Evaluation completed, time taken: {end_time - start_time:.2f} seconds")

@@ -12,67 +12,81 @@ from pathlib import Path
 import time
 from performance_monitor import PerformanceMonitor
 
-def run_interpolation_for_pair(pair_dir, method, output_dir, database_name=None, subject_id=None, sequence_id=None):
+def run_interpolation_for_pair(pair_info_path, method, output_dir, database_name=None, subject_id=None, sequence_id=None):
     """对单个关键帧对运行插值"""
-
-    # get all frame_XXX.obj files
-    frame_files = list(pair_dir.glob("frame_*.obj"))
-    frame_files.sort(key=lambda x: x.name)
-    if len(frame_files) < 2:
-        print(f"警告: 无法找到足够的frame文件 {pair_dir}")
+    
+    # 读取pair信息
+    with open(pair_info_path, 'r') as f:
+        pair_info = json.load(f)
+    
+    # 获取数据库目录（frame_xxx.obj文件所在目录）
+    pair_info_path = Path(pair_info_path)
+    # Frame文件在k值目录的父目录中（共享目录）
+    database_dir = pair_info_path.parent.parent  # k15/ -> 50002_jumping_jacks/
+    
+    # 验证必要的frame文件是否存在
+    start_idx = pair_info['start_idx']
+    end_idx = pair_info['end_idx']
+    gt_frame_indices = pair_info['gt_frame_indices']
+    
+    # 检查关键帧文件
+    start_frame_path = database_dir / f"frame_{start_idx:03d}.obj"
+    end_frame_path = database_dir / f"frame_{end_idx:03d}.obj"
+    
+    if not start_frame_path.exists() or not end_frame_path.exists():
+        print(f"警告: 无法找到关键帧文件 {start_frame_path} 或 {end_frame_path}")
+        return False
+    
+    # 检查优化帧文件
+    missing_frames = []
+    for frame_idx in gt_frame_indices:
+        frame_path = database_dir / f"frame_{frame_idx:03d}.obj"
+        if not frame_path.exists():
+            missing_frames.append(frame_idx)
+    
+    if missing_frames:
+        print(f"警告: 缺少优化帧文件: {missing_frames}")
         return False
 
     
-    # 创建输出目录 - 使用新的路径结构: evaluation/method/database_name/subjectid_sequenceid_k{k}/pair_xxx/
+    # 创建输出目录 - 使用新的路径结构
     if database_name and subject_id and sequence_id:
-        # 从pairs_index.json获取k值和其他参数
-        pairs_index_file = pair_dir.parent / "pairs_index.json"
-        k_value = 10  # 默认值
-        if pairs_index_file.exists():
-            try:
-                import json
-                with open(pairs_index_file, 'r') as f:
-                    pairs_info = json.load(f)
-                    k_value = pairs_info.get('k', 10)
-            except:
-                pass
+        # 从pair_info_path推断k值
+        pair_info_path = Path(pair_info_path)
+        k_dir = pair_info_path.parent  # k值目录
+        k_dir_name = k_dir.name  # 例如 "k15"
+        k_value = int(k_dir_name[1:]) if k_dir_name.startswith('k') else 10  # 提取k值
+        
+        # 获取pair文件名（不带扩展名）作为子目录名
+        pair_name = pair_info_path.stem  # 例如 "pair_000"
         
         # 新的路径结构，包含k值和pair-specific子目录
-        method_output_dir = Path(output_dir) / method / database_name / f"{subject_id}_{sequence_id}_k{k_value}" / pair_dir.name
+        method_output_dir = Path(output_dir) / method / database_name / f"{subject_id}_{sequence_id}_k{k_value}" / pair_name
     else:
         # 保持原有结构作为fallback
-        method_output_dir = Path(output_dir) / method / pair_dir.name
+        pair_name = pair_info_path.stem
+        method_output_dir = Path(output_dir) / method / pair_name
     
     method_output_dir.mkdir(parents=True, exist_ok=True)
     
     # 为评估模式设置插值结果输出到evaluation results目录
-    # 这样插值结果和最终的results.csv会在同一个individual_evaluations目录下
-    eval_interpolation_output = method_output_dir / "intp"  # 改为intp
+    eval_interpolation_output = method_output_dir / "intp"
     eval_interpolation_output.mkdir(parents=True, exist_ok=True)
     
-    # 将关键帧文件复制到输出目录
-    # import shutil
-
-
-    # # 复制所有frame_XXX.obj文件用于蒙皮优化
-    # for frame_file in frame_files:
-    #     shutil.copy2(frame_file, method_output_dir / frame_file.name)
-    #     print(f"  复制优化帧: {frame_file.name}")
-
-    
-    start_idx = 0
-    end_idx = len(frame_files) - 1 
-    # 计算需要插值的帧数，应该等于GT中间帧数
-    # 对于k个总帧数，中间帧数量是 k-1，即 end_idx - start_idx - 1
-    num_interpolate = end_idx - start_idx - 1
+    # 计算需要插值的帧数，为了节约时间，限制为最多5个中间帧
+    # 原本应该是 k-1 个中间帧，现在改为 min(k-1, 5)
+    k_frames = end_idx - start_idx - 1  # 实际的k-1个中间帧
+    num_interpolate = min(k_frames, 5)  # 限制最多5个
     print(f"  检测到帧索引: start={start_idx}, end={end_idx}")
+    print(f"  原本需要插值帧数: {k_frames}, 实际使用: {num_interpolate}")
+    print(f"  优化帧索引: {gt_frame_indices}")
     
-    # 运行插值命令 - 使用文件夹路径和正确的帧索引
+    # 运行插值命令 - 使用数据库目录路径和正确的帧索引
     python_exe = r"C:\Users\sky\miniconda3\envs\nmario\python.exe"
     cmd = [
         python_exe, "volumetric_interpolation_pipeline.py",
-        str(pair_dir),  # folder_path
-        str(start_idx),          # start_frame index (通常是0)
+        str(database_dir),       # folder_path - 指向包含所有frame_xxx.obj文件的目录
+        str(start_idx),          # start_frame index
         str(end_idx),            # end_frame index
         "--method", method,
         "--num_interpolate", str(num_interpolate),  # 生成k - 1个中间帧
@@ -98,11 +112,11 @@ def run_interpolation_for_pair(pair_dir, method, output_dir, database_name=None,
         monitor.stop_monitoring()
         
         # 保存性能数据
-        performance_file = eval_interpolation_output / f"performance_{method}_{pair_dir.name}.json"
+        performance_file = eval_interpolation_output / f"performance_{method}_{pair_name}.json"
         performance_summary = monitor.save_performance_data(performance_file)
         
         if result.returncode == 0:
-            print(f"插值成功: {method} - {pair_dir.name} (耗时: {end_time - start_time:.2f}s)")
+            print(f"插值成功: {method} - {pair_name} (耗时: {end_time - start_time:.2f}s)")
             print(f"性能数据已保存: {performance_file}")
             
             # 简化版性能汇总
@@ -117,7 +131,7 @@ def run_interpolation_for_pair(pair_dir, method, output_dir, database_name=None,
                 print(f"标准输出: {result.stdout}")
             return True
         else:
-            print(f"插值失败: {method} - {pair_dir.name}")
+            print(f"插值失败: {method} - {pair_name}")
             print(f"返回码: {result.returncode}")
             if result.stderr:
                 print(f"错误输出: {result.stderr}")
@@ -127,16 +141,16 @@ def run_interpolation_for_pair(pair_dir, method, output_dir, database_name=None,
     except subprocess.TimeoutExpired:
         monitor.stop_monitoring()
         # 即使超时也保存性能数据，有助于诊断性能问题
-        performance_file = eval_interpolation_output / f"performance_{method}_{pair_dir.name}_timeout.json"
+        performance_file = eval_interpolation_output / f"performance_{method}_{pair_name}_timeout.json"
         monitor.save_performance_data(performance_file)
-        print(f"插值超时: {method} - {pair_dir.name}")
+        print(f"插值超时: {method} - {pair_name}")
         return False
     except Exception as e:
         monitor.stop_monitoring()
         # 异常情况也保存性能数据
-        performance_file = eval_interpolation_output / f"performance_{method}_{pair_dir.name}_error.json"
+        performance_file = eval_interpolation_output / f"performance_{method}_{pair_name}_error.json"
         monitor.save_performance_data(performance_file)
-        print(f"插值异常: {method} - {pair_dir.name} - {e}")
+        print(f"插值异常: {method} - {pair_name} - {e}")
         return False
 
 def main():
@@ -158,6 +172,8 @@ def main():
                        help="Subject ID")
     parser.add_argument("--sequence_id", type=str, default=None,
                        help="Sequence ID")
+    parser.add_argument("--k", type=int, default=None,
+                       help="指定k值（如果不指定，使用第一个找到的k值目录）")
     
     args = parser.parse_args()
     
@@ -166,12 +182,71 @@ def main():
         print(f"错误: 关键帧对目录不存在 {pairs_dir}")
         return
     
+    # 查找具体的database/subject_sequence路径和k值子目录
+    k_dir = None
+    
+    if args.k:
+        # 如果指定了k值，搜索包含该k值的目录
+        k_pattern = f"k{args.k}"
+        
+        # 搜索可能的路径结构
+        possible_paths = []
+        
+        # 1. 直接在pairs_dir下查找
+        direct_k_dir = pairs_dir / k_pattern
+        if direct_k_dir.exists():
+            possible_paths.append(direct_k_dir)
+        
+        # 2. 在database/subject_sequence子目录下查找
+        for db_dir in pairs_dir.iterdir():
+            if db_dir.is_dir():
+                for subject_dir in db_dir.iterdir():
+                    if subject_dir.is_dir():
+                        nested_k_dir = subject_dir / k_pattern
+                        if nested_k_dir.exists():
+                            possible_paths.append(nested_k_dir)
+        
+        if possible_paths:
+            k_dir = possible_paths[0]  # 使用第一个找到的
+            print(f"找到k{args.k}目录: {k_dir}")
+        else:
+            print(f"错误: 指定的k值目录不存在 k{args.k}")
+            return
+    else:
+        # 查找所有k值子目录
+        k_dirs = []
+        
+        # 在所有子目录中搜索k值目录
+        for root_path in pairs_dir.rglob("k*"):
+            if root_path.is_dir() and root_path.name.startswith('k') and root_path.name[1:].isdigit():
+                k_dirs.append(root_path)
+        if not k_dirs:
+            print(f"错误: 在 {pairs_dir} 及其子目录中未找到k值子目录")
+            return
+        # 使用第一个找到的k值目录
+        k_dir = k_dirs[0]
+    
+    print(f"使用k值目录: {k_dir}")
+    
     # 读取关键帧对索引
-    pairs_index_file = pairs_dir / "pairs_index.json"
+    pairs_index_file = k_dir / "pairs_index.json"
     if pairs_index_file.exists():
         with open(pairs_index_file, 'r') as f:
             pairs_index = json.load(f)
-        pair_dirs = [Path(p) for p in pairs_index['pair_dirs']]
+        
+        # 修正路径处理：如果路径是相对路径，转换为绝对路径
+        pair_info_paths = []
+        for p in pairs_index['pair_info_paths']:
+            path = Path(p)
+            if not path.is_absolute():
+                # 如果是相对路径，相对于k_dir进行解析
+                if path.name.startswith('pair_') and path.name.endswith('.json'):
+                    # 简化：直接使用k_dir中的文件
+                    path = k_dir / path.name
+                else:
+                    # 其他情况，可能需要相对于工作目录
+                    path = Path.cwd() / path
+            pair_info_paths.append(path)
         
         # 从pairs_index.json获取subject_id和sequence_id信息
         if not args.subject_id:
@@ -180,9 +255,9 @@ def main():
             args.sequence_id = pairs_index.get('sequence_id', 'jumping_jacks')
         print(f"从pairs_index.json获取信息: subject_id={args.subject_id}, sequence_id={args.sequence_id}")
     else:
-        # 如果没有索引文件，扫描目录
-        pair_dirs = [d for d in pairs_dir.iterdir() if d.is_dir() and d.name.startswith("pair_")]
-        pair_dirs.sort()
+        # 如果没有索引文件，扫描k_dir中的pair_xxx.json文件
+        pair_info_paths = list(k_dir.glob("pair_*.json"))
+        pair_info_paths.sort()
         
         # 使用默认值
         if not args.subject_id:
@@ -191,21 +266,21 @@ def main():
             args.sequence_id = "jumping_jacks"
     
     if args.max_pairs:
-        pair_dirs = pair_dirs[:args.max_pairs]
+        pair_info_paths = pair_info_paths[:args.max_pairs]
     
-    print(f"找到 {len(pair_dirs)} 个关键帧对")
+    print(f"找到 {len(pair_info_paths)} 个关键帧对")
     print(f"输出路径结构: evaluation/{args.database_name}/{args.subject_id}_{args.sequence_id}/")
     
     # 统计结果
     results = {method: {'success': 0, 'failed': 0} for method in args.methods}
     
     # 对每个关键帧对运行所有方法
-    for i, pair_dir in enumerate(pair_dirs):
-        print(f"\n处理关键帧对 {i+1}/{len(pair_dirs)}: {pair_dir.name}")
+    for i, pair_info_path in enumerate(pair_info_paths):
+        print(f"\n处理关键帧对 {i+1}/{len(pair_info_paths)}: {pair_info_path.name}")
         
         for method in args.methods:
             success = run_interpolation_for_pair(
-                pair_dir, method, args.output_dir,
+                pair_info_path, method, args.output_dir,
                 database_name=args.database_name,
                 subject_id=args.subject_id,
                 sequence_id=args.sequence_id

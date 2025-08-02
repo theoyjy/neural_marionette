@@ -95,7 +95,7 @@ def step2_run_interpolation(args):
     database_name = Path(args.gt_hdf5).stem
     
     # 构建具体的keyframe_pairs路径，包含k值
-    pairs_dir = f"evaluation/data/dfaust/keyframe_pairs/{database_name}/{args.subject_id}_{args.sequence_id}_k{args.k}"
+    pairs_dir = f"evaluation/data/dfaust/keyframe_pairs/{database_name}/{args.subject_id}_{args.sequence_id}"
     
     cmd = [
         args.python_path, "evaluation/run_interpolation.py",
@@ -105,7 +105,8 @@ def step2_run_interpolation(args):
         "--max_pairs", str(args.max_pairs) if args.max_pairs else "3",
         "--database_name", database_name,
         "--subject_id", args.subject_id,
-        "--sequence_id", args.sequence_id
+        "--sequence_id", args.sequence_id,
+        "--k", str(args.k)
     ]
     
     return run_step("运行插值", cmd)
@@ -232,7 +233,7 @@ def main():
                        help="GT数据HDF5文件路径")
     parser.add_argument("--subject_id", type=str, default="50002",
                        help="DFAUST subject ID")
-    parser.add_argument("--sequence_id", type=str, default="jump",
+    parser.add_argument("--sequence_id", type=str, default="jumping_jacks",
                        help="DFAUST sequence ID")
     parser.add_argument("--k", type=int, default=10,
                        help="每隔k帧抽取一对关键帧")

@@ -5,3 +5,5 @@ output/
 /test_output
 *.npz
 /evaluation/data
+/evaluation/baseline
+/evaluation/dual_reference
