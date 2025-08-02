@@ -198,7 +198,7 @@ class LBSMeshVisualizer:
             vis.add_geometry(original_mesh)
             vis.add_geometry(reconstructed_mesh)
             
-            print("🎨 显示模式: 并排对比 (蓝色=原始, 红色=重建)")
+            print("  显示模式: 并排对比 (蓝色=原始, 红色=重建)")
             
         elif mode == 'overlay':
             # 叠加显示，原始mesh半透明
@@ -208,14 +208,14 @@ class LBSMeshVisualizer:
             vis.add_geometry(original_mesh)
             vis.add_geometry(reconstructed_mesh)
             
-            print("🎨 显示模式: 叠加对比 (蓝色=原始, 红色=重建)")
+            print("  显示模式: 叠加对比 (蓝色=原始, 红色=重建)")
             
         elif mode == 'error_only':
             # 只显示误差颜色编码的mesh
             error_mesh = self.create_error_colored_mesh(original_mesh, vertex_errors, colormap)
             vis.add_geometry(error_mesh)
             
-            print(f"🎨 显示模式: 误差可视化 (颜色映射: {colormap})")
+            print(f"  显示模式: 误差可视化 (颜色映射: {colormap})")
             print(f"   颜色含义: 深色=低误差, 亮色=高误差")
             
         elif mode == 'triple':
@@ -237,7 +237,7 @@ class LBSMeshVisualizer:
             error_mesh.translate([width * 2.4, 0, 0])
             vis.add_geometry(error_mesh)
             
-            print("🎨 显示模式: 三重对比 (蓝色=原始, 红色=重建, 彩色=误差)")
+            print("  显示模式: 三重对比 (蓝色=原始, 红色=重建, 彩色=误差)")
         
         # 设置相机参数以便更好地观察
         ctr = vis.get_view_control()
@@ -417,7 +417,7 @@ def main():
     
     args = parser.parse_args()
     
-    print("🎨 LBS重建网格可视化工具")
+    print("  LBS重建网格可视化工具")
     print("=" * 50)
     
     try:

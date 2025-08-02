@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-顶点颜色处理工具
+Vertex color processing tool
 
-重新设计：在插值过程中直接处理顶点颜色，而不是事后插值
+Redesigned: Process vertex colors directly during interpolation, not after interpolation
 """
 
 import os
@@ -13,300 +13,303 @@ from typing import Optional, Dict, Any, List
 import cv2
 
 class VertexColorProcessor:
-    """顶点颜色处理器 - 从贴图文件加载顶点颜色到reference mesh"""
+    """Vertex color processor - Load vertex colors from texture files to reference mesh"""
     
     def __init__(self, mesh_folder_path: str):
         """
-        初始化顶点颜色处理器
+        Initialize vertex color processor
         
         Args:
-            mesh_folder_path: 网格文件目录路径
+            mesh_folder_path: Mesh file directory path
         """
         self.mesh_folder_path = Path(mesh_folder_path)
         
-        # 加载排序后的网格文件列表
+        # Load sorted mesh file list
         self.mesh_files = sorted(list(self.mesh_folder_path.glob("*.obj")))
         if len(self.mesh_files) == 0:
-            raise ValueError(f"在 {self.mesh_folder_path} 中未找到obj文件")
+            raise ValueError(f"No obj files found in {self.mesh_folder_path}")
         
-        # 加载排序后的贴图文件列表
+        # Load sorted texture file list
         self.texture_files = sorted(list(self.mesh_folder_path.glob("*.jpg")) + list(self.mesh_folder_path.glob("*.png")))
         
-        self.mesh_cache = {}  # 缓存已加载的mesh
-        self.texture_cache = {}  # 缓存已加载的贴图
+        self.mesh_cache = {}  # Cache loaded mesh
+        self.texture_cache = {}  # Cache loaded texture
         
-        print(f"🎨 初始化顶点颜色处理器: {mesh_folder_path}")
-        print(f"  - 网格文件数量: {len(self.mesh_files)}")
-        print(f"  - 贴图文件数量: {len(self.texture_files)}")
+        print(f"Initialize vertex color processor: {mesh_folder_path}")
+        print(f"  - Mesh file count: {len(self.mesh_files)}")
+        print(f"  - Texture file count: {len(self.texture_files)}")
     
     def load_texture_for_frame(self, frame_id: int) -> Optional[np.ndarray]:
         """
-        为指定帧加载贴图文件
+        Load texture file for specified frame
         
         Args:
-            frame_id: 帧索引（排序后文件列表的索引，从0开始）
+            frame_id: Frame index (index in sorted file list, starting from 0)
             
         Returns:
-            贴图图像数组，如果找不到则返回None
+            Texture image array, if not found return None
         """
         if frame_id in self.texture_cache:
             return self.texture_cache[frame_id]
         
         # 检查帧索引范围
         if frame_id >= len(self.texture_files):
-            print(f"⚠️  帧索引超出范围: {frame_id} >= {len(self.texture_files)}")
+            print(f"Frame index out of range: {frame_id} >= {len(self.texture_files)}")
             return None
         
-        # 直接使用排序后的贴图文件列表索引
+        # Directly use sorted texture file list index
         texture_file = self.texture_files[frame_id]
         
-        print(f"📁 加载贴图: {texture_file.name} (索引 {frame_id})")
+        print(f"Load texture: {texture_file.name} (index {frame_id})")
         
         try:
             # 使用OpenCV加载贴图
             texture = cv2.imread(str(texture_file))
             if texture is None:
-                print(f"❌ 无法加载贴图文件: {texture_file}")
+                print(f"Cannot load texture file: {texture_file}")
                 return None
             
             # 转换为RGB格式
             texture_rgb = cv2.cvtColor(texture, cv2.COLOR_BGR2RGB)
-            print(f"✅ 成功加载贴图: {texture_rgb.shape}")
+            print(f"Successfully loaded texture: {texture_rgb.shape}")
             
             # 缓存结果
             self.texture_cache[frame_id] = texture_rgb
             return texture_rgb
             
         except Exception as e:
-            print(f"❌ 加载贴图失败: {e}")
+            print(f"Load texture failed: {e}")
             return None
     
-    def generate_vertex_colors_from_texture(self, mesh: o3d.geometry.TriangleMesh, texture: np.ndarray) -> np.ndarray:
+    def generate_vertex_colors_from_texture(self,   mesh: o3d.geometry.TriangleMesh, texture: np.ndarray) -> np.ndarray:
         """
-        从贴图生成顶点颜色（使用mesh中已有的UV坐标）
+        Generate vertex colors from texture (using UV coordinates in mesh)
         
         Args:
-            mesh: 网格对象
-            texture: 贴图图像
+            mesh: Mesh object
+            texture: Texture image
             
         Returns:
-            顶点颜色数组
+            Vertex color array
         """
         try:
             vertices = np.asarray(mesh.vertices)
             
-            # 检查mesh是否有UV坐标
+            # Check if mesh has UV coordinates
             if not hasattr(mesh, 'triangle_uvs') or len(mesh.triangle_uvs) == 0:
-                print(f"⚠️  mesh没有UV坐标，使用默认颜色")
+                print(f"Mesh has no UV coordinates, using default colors")
                 return self._generate_default_vertex_colors(vertices)
             
-            print(f"✅ 使用mesh中已有的UV坐标: {len(mesh.triangle_uvs)} 个")
+            print(f"Using UV coordinates in mesh: {len(mesh.triangle_uvs)}")
             
-            # 获取UV坐标
+            # Get UV coordinates
             triangle_uvs = np.asarray(mesh.triangle_uvs)  # [num_triangles * 3, 2]
             triangles = np.asarray(mesh.triangles)  # [num_triangles, 3]
             
-            # 为每个顶点计算平均UV坐标
+            # Calculate average UV coordinates for each vertex
             vertex_uvs = np.zeros((len(vertices), 2))
             vertex_counts = np.zeros(len(vertices))
             
-            # 遍历每个三角形
+            # Traverse each triangle
             for i in range(len(triangles)):
                 triangle = triangles[i]
-                # 每个三角形有3个UV坐标
+                # Each triangle has 3 UV coordinates
                 for j in range(3):
                     vertex_idx = triangle[j]
                     uv_idx = i * 3 + j
                     vertex_uvs[vertex_idx] += triangle_uvs[uv_idx]
                     vertex_counts[vertex_idx] += 1
             
-            # 计算平均UV坐标
+            # Calculate average UV coordinates
             valid_vertices = vertex_counts > 0
             vertex_uvs[valid_vertices] /= vertex_counts[valid_vertices, np.newaxis]
             
-            # 将UV坐标映射到贴图像素
+            # Map UV coordinates to texture pixels
             texture_height, texture_width = texture.shape[:2]
-            u_coords = vertex_uvs[:, 0]  # U坐标
-            v_coords = vertex_uvs[:, 1]  # V坐标
+            u_coords = vertex_uvs[:, 0]  # U coordinates
+            v_coords = vertex_uvs[:, 1]  # V coordinates
             
-            # 将UV坐标转换为像素坐标
+            # Convert UV coordinates to pixel coordinates
             u_pixels = np.clip(u_coords * (texture_width - 1), 0, texture_width - 1).astype(int)
             v_pixels = np.clip((1 - v_coords) * (texture_height - 1), 0, texture_height - 1).astype(int)
             
-            # 从贴图中采样颜色
-            vertex_colors = texture[v_pixels, u_pixels] / 255.0  # 归一化到[0,1]
+            # Sample colors from texture
+            vertex_colors = texture[v_pixels, u_pixels] / 255.0  # Normalize to [0,1]
             
-            print(f"✅ 从贴图生成顶点颜色: {len(vertex_colors)} 个")
-            print(f"  - UV坐标范围: U[{u_coords.min():.3f}, {u_coords.max():.3f}], V[{v_coords.min():.3f}, {v_coords.max():.3f}]")
+            print(f"Generate vertex colors from texture: {len(vertex_colors)}")
+            print(f"  - UV coordinates range: U[{u_coords.min():.3f}, {u_coords.max():.3f}], V[{v_coords.min():.3f}, {v_coords.max():.3f}]")
             return vertex_colors
             
         except Exception as e:
-            print(f"❌ 从贴图生成顶点颜色失败: {e}")
+            print(f"Generate vertex colors from texture failed: {e}")
             import traceback
             traceback.print_exc()
-            # 如果失败，生成默认颜色
+            # If failed, generate default colors
             return self._generate_default_vertex_colors(vertices)
     
     def load_reference_mesh_with_colors(self, frame_id: int) -> Optional[o3d.geometry.TriangleMesh]:
         """
-        加载参考帧的mesh并从贴图加载顶点颜色
+        Load reference frame mesh and load vertex colors from texture
         
         Args:
-            frame_id: 帧索引（排序后文件列表的索引，从0开始）
+            frame_id: Frame index (index in sorted file list, starting from 0)
             
         Returns:
-            带顶点颜色的mesh
+            Mesh with vertex colors
         """
         if frame_id in self.mesh_cache:
             return self.mesh_cache[frame_id]
         
-        # 检查帧索引范围
+        # Check frame index range
         if frame_id >= len(self.mesh_files):
-            print(f"⚠️  帧索引超出范围: {frame_id} >= {len(self.mesh_files)}")
+            print(f"Frame index out of range: {frame_id} >= {len(self.mesh_files)}")
             return None
         
-        # 直接使用排序后的网格文件列表索引
+        # Directly use sorted mesh file list index
         mesh_file = self.mesh_files[frame_id]
-        print(f"📁 加载参考mesh: {mesh_file.name} (索引 {frame_id})")
+        print(f"Load reference mesh: {mesh_file.name} (index {frame_id})")
         
-        # 加载mesh
+        # Load mesh
         mesh = o3d.io.read_triangle_mesh(str(mesh_file))
         
         if len(mesh.vertices) == 0:
-            print(f"❌ mesh文件为空: {mesh_file}")
+            print(f"Mesh file is empty: {mesh_file}")
             return None
         
-        # 检查是否有顶点颜色
+        # Check if there are vertex colors
         if len(mesh.vertex_colors) == 0:
-            print(f"⚠️  mesh没有顶点颜色，尝试从贴图加载...")
+            print(f"Mesh has no vertex colors, trying to load from texture...")
             
-            # 尝试加载贴图
+            # Try to load texture
             texture = self.load_texture_for_frame(frame_id)
             if texture is not None:
-                # 从贴图生成顶点颜色
+                # Generate vertex colors from texture
                 vertex_colors = self.generate_vertex_colors_from_texture(mesh, texture)
                 mesh.vertex_colors = o3d.utility.Vector3dVector(vertex_colors)
-                print(f"✅ 从贴图成功加载顶点颜色")
+                print(f"Successfully loaded vertex colors from texture")
             else:
-                print(f"⚠️  无法加载贴图，生成默认颜色")
+                print(f"Cannot load texture, generating default colors")
                 vertices = np.asarray(mesh.vertices)
                 default_colors = self._generate_default_vertex_colors(vertices)
                 mesh.vertex_colors = o3d.utility.Vector3dVector(default_colors)
         else:
-            print(f"✅ 找到顶点颜色: {len(mesh.vertex_colors)} 个")
+            print(f"Found vertex colors: {len(mesh.vertex_colors)}")
         
-        # 确保有法线
+        # Ensure there are vertex normals
         if not mesh.has_vertex_normals():
             mesh.compute_vertex_normals()
-            print(f"✅ 计算顶点法线")
+            print(f"Compute vertex normals")
         
-        # 缓存结果
+        # Cache result
         self.mesh_cache[frame_id] = mesh
         return mesh
     
     def save_reference_mesh_with_colors(self, mesh: o3d.geometry.TriangleMesh, frame_id: int, output_dir: Path):
         """
-        保存带顶点颜色的reference mesh（用于debug，同时生成PLY和OBJ格式）
+        Save reference mesh with vertex colors (for debug, generate PLY and OBJ format)
         
         Args:
-            mesh: 带顶点颜色的mesh
-            frame_id: 帧索引（排序后文件列表的索引，从0开始）
-            output_dir: 输出目录
+            mesh: Mesh with vertex colors
+            frame_id: Frame index (index in sorted file list, starting from 0)
+            output_dir: Output directory
         """
         try:
-            # 确保输出目录存在
+            # Ensure output directory exists
             output_dir.mkdir(parents=True, exist_ok=True)
             
-            # 确保有法线
+            # Ensure there are vertex normals
             if not mesh.has_vertex_normals():
                 mesh.compute_vertex_normals()
             
-            # 保存PLY格式（兼容Assimp）
-            ply_filename = f"reference_frame_{frame_id:05d}_with_colors.ply"
-            ply_filepath = output_dir / ply_filename
-            ply_success = o3d.io.write_triangle_mesh(str(ply_filepath), mesh, write_ascii=True)
+            # Save PLY format (compatible with Assimp)
+            # ply_filename = f"reference_frame_{frame_id:05d}_with_colors.ply"
+            # ply_filepath = output_dir / ply_filename
+            # ply_success = o3d.io.write_triangle_mesh(str(ply_filepath), mesh, write_ascii=True)
             
-            # 保存OBJ格式（兼容传统工具）
+            # Save OBJ format (compatible with traditional tools)
             obj_filename = f"reference_frame_{frame_id:05d}_with_colors.obj"
             obj_filepath = output_dir / obj_filename
             obj_success = o3d.io.write_triangle_mesh(str(obj_filepath), mesh)
             
-            if ply_success and obj_success:
-                print(f"✅ 保存带顶点颜色的reference mesh: {ply_filename}, {obj_filename}")
-                return str(ply_filepath)  # 返回PLY文件路径作为主要输出
+            if obj_success:
+                print(f"Save reference mesh with vertex colors: {ply_filename}, {obj_filename}")
+                return str(obj_filepath)  # Return PLY file path as main output
             else:
-                print(f"❌ 保存reference mesh失败: PLY={ply_success}, OBJ={obj_success}")
+                print(f"Save reference mesh failed: PLY={ply_success}, OBJ={obj_success}")
                 return None
                 
         except Exception as e:
-            print(f"❌ 保存reference mesh异常: {e}")
+            print(f"Save reference mesh exception: {e}")
             return None
     
     def _generate_default_vertex_colors(self, vertices: np.ndarray) -> np.ndarray:
-        """生成默认顶点颜色（基于顶点位置）"""
-        # 归一化顶点坐标到[0,1]范围
+        """Generate default vertex colors (based on vertex positions)"""
+        # Normalize vertex coordinates to [0,1] range
         min_coords = vertices.min(axis=0)
         max_coords = vertices.max(axis=0)
         normalized_vertices = (vertices - min_coords) / (max_coords - min_coords + 1e-8)
         
-        # 使用归一化坐标作为颜色 (X->R, Y->G, Z->B)
+        # Use normalized coordinates as colors (X->R, Y->G, Z->B)
         colors = np.clip(normalized_vertices, 0, 1)
         return colors
     
     def save_mesh_with_vertex_colors(self, mesh: o3d.geometry.TriangleMesh, 
                                    output_path: Path, frame_idx: int) -> Optional[str]:
         """
-        保存带顶点颜色的mesh（同时生成PLY和OBJ格式）
+        Save mesh with vertex colors (generate PLY and OBJ format)
         
         Args:
-            mesh: 要保存的mesh
-            output_path: 输出目录
-            frame_idx: 帧索引（排序后文件列表的索引，从0开始）
+            mesh: Mesh to save
+            output_path: Output directory
+            frame_idx: Frame index (index in sorted file list, starting from 0)
             
         Returns:
-            保存的文件路径，如果失败返回None
+            Saved file path, if failed return None
         """
         try:
-            # 确保输出目录存在
+            # Ensure output directory exists
             output_path.mkdir(parents=True, exist_ok=True)
             
-            # 确保有法线
+            # Ensure there are vertex normals
             if not mesh.has_vertex_normals():
                 mesh.compute_vertex_normals()
             
-            # 保存PLY格式（兼容Assimp）
-            ply_filename = f"frame_{frame_idx:05d}_with_colors.ply"
-            ply_filepath = output_path / ply_filename
-            ply_success = o3d.io.write_triangle_mesh(str(ply_filepath), mesh, write_ascii=True)
+            # Save PLY format (compatible with Assimp)
+            # ply_filename = f"frame_{frame_idx:05d}_with_colors.ply"
+            # ply_filepath = output_path / ply_filename
+            # ply_success = o3d.io.write_triangle_mesh(str(ply_filepath), mesh, write_ascii=True)
             
-            # 保存OBJ格式（兼容传统工具）
+            # Save OBJ format (compatible with traditional tools)
             obj_filename = f"frame_{frame_idx:05d}_with_colors.obj"
             obj_filepath = output_path / obj_filename
             obj_success = o3d.io.write_triangle_mesh(str(obj_filepath), mesh)
             
-            if ply_success and obj_success:
-                print(f"✅ 保存带顶点颜色的mesh: {ply_filename}, {obj_filename}")
-                return str(ply_filepath)  # 返回PLY文件路径作为主要输出
+            if obj_success:
+                print(f"Save mesh with vertex colors: {obj_filename}")
+                return str(obj_filename)  # Return PLY file path as main output
             else:
-                print(f"❌ 保存mesh失败: PLY={ply_success}, OBJ={obj_success}")
+                print(f"Save mesh failed: OBJ={obj_success}")
                 return None
                 
         except Exception as e:
-            print(f"❌ 保存mesh异常: {e}")
+            print(f"Save mesh exception: {e}")
             return None
 
-def integrate_vertex_color_processing(interpolator, mesh_folder_path: str):
+def integrate_vertex_color_processing(interpolator, mesh_folder_path: str, evaluation_mode: bool = False):
     """
-    将顶点颜色处理集成到插值器中
+    Integrate vertex color processing into interpolator
     
-    新的设计：在插值过程中直接处理顶点颜色
+    New design: Process vertex colors directly during interpolation
+    Args:
+        evaluation_mode: If True, skip color processing but keep enhanced file saving
     """
-    print("🎨 集成顶点颜色处理到插值器...")
+    mode_str = "evaluation mode (skip color processing)" if evaluation_mode else "full color processing"
+    print(f"Integrate vertex color processing into interpolator ({mode_str})...")
     
-    # 创建顶点颜色处理器
-    vertex_color_processor = VertexColorProcessor(mesh_folder_path)
+    # Create vertex color processor (only if not in evaluation mode)
+    vertex_color_processor = None if evaluation_mode else VertexColorProcessor(mesh_folder_path)
     
-    # 保存原始的插值方法
+    # Save original interpolation method
     original_method = interpolator.generate_interpolated_frames
     
     def enhanced_generate_interpolated_frames(frame_start, frame_end, num_interpolate, 
@@ -314,17 +317,23 @@ def integrate_vertex_color_processing(interpolator, mesh_folder_path: str):
                                             output_dir=None, debug_frames=None, smooth_mesh=False, 
                                             subdivide_iter=3, use_vertex_colors=True,
                                             save_npy_files=False, save_standard_obj=True):
-        """增强的插值帧生成方法 - 在插值过程中直接处理顶点颜色"""
+        """Enhanced interpolation frame generation method - process vertex colors directly during interpolation"""
         
-        print(f"🎨 开始插值生成，启用顶点颜色处理...")
+        if evaluation_mode:
+            print(f"Start interpolation generation in evaluation mode (skip color processing)...")
+            # In evaluation mode, skip color processing but use enhanced file saving
+            start_mesh = None
+            end_mesh = None
+        else:
+            print(f"Start interpolation generation, enable vertex color processing...")
+            
+            # Load reference frame mesh and vertex colors before interpolation
+            print(f"Load reference frame mesh and vertex colors before interpolation...")
+            start_mesh = vertex_color_processor.load_reference_mesh_with_colors(frame_start)
+            end_mesh = vertex_color_processor.load_reference_mesh_with_colors(frame_end)
         
-        # 在插值之前加载参考帧的mesh和顶点颜色
-        print(f"🎨 在插值之前加载reference mesh和顶点颜色...")
-        start_mesh = vertex_color_processor.load_reference_mesh_with_colors(frame_start)
-        end_mesh = vertex_color_processor.load_reference_mesh_with_colors(frame_end)
-        
-        if start_mesh is None or end_mesh is None:
-            print(f"❌ 无法加载参考帧mesh，使用原始插值方法")
+        if (start_mesh is None or end_mesh is None) and not evaluation_mode:
+            print(f"Cannot load reference frame mesh, using original interpolation method")
             return original_method(
                 frame_start, frame_end, num_interpolate, max_optimize_frames, 
                 optimize_weights, output_dir, debug_frames, smooth_mesh, subdivide_iter,
@@ -332,25 +341,25 @@ def integrate_vertex_color_processing(interpolator, mesh_folder_path: str):
                 save_standard_obj=save_standard_obj
             )
         
-        # 保存带顶点颜色的reference mesh（用于debug）
-        if output_dir:
+        # Save reference mesh with vertex colors (for debug) - only if not in evaluation mode
+        if output_dir and not evaluation_mode:
             debug_dir = Path(output_dir) / "debug_reference_meshes"
             vertex_color_processor.save_reference_mesh_with_colors(start_mesh, frame_start, debug_dir)
             vertex_color_processor.save_reference_mesh_with_colors(end_mesh, frame_end, debug_dir)
-            print(f"✅ 保存reference mesh到: {debug_dir}")
+            print(f"Save reference mesh to: {debug_dir}")
         
-        # 调用原始的插值方法，但不保存文件（我们会在后面手动保存）
+        # Call original interpolation method, but do not save files (we will save manually later)
         interpolated_frames = original_method(
             frame_start, frame_end, num_interpolate, max_optimize_frames, 
             optimize_weights, output_dir, debug_frames, smooth_mesh, subdivide_iter,
-            use_vertex_colors=False,  # 我们会在后面手动处理顶点颜色
+            use_vertex_colors=False,  # We will handle vertex colors manually later
             save_npy_files=save_npy_files,
-            save_standard_obj=False  # 不保存标准obj文件，我们会保存带颜色的版本
+            save_standard_obj=False  # Do not save standard obj file, we will save the colored version
         )
         
-        # 如果启用了顶点颜色处理，为每个插值帧添加顶点颜色
+        # If vertex color processing is enabled, add vertex colors to each interpolated frame
         if use_vertex_colors and interpolated_frames:
-            print(f"🎨 为插值帧添加顶点颜色...")
+            print(f"Add vertex colors to each interpolated frame...")
             
             for i, frame_data in enumerate(interpolated_frames):
                 if 'mesh' in frame_data:
@@ -358,17 +367,17 @@ def integrate_vertex_color_processing(interpolator, mesh_folder_path: str):
                     frame_idx = frame_data.get('frame_idx', i)
                     t = frame_data.get('interpolation_t', i / len(interpolated_frames))
                     
-                    # 从参考帧插值顶点颜色
+                    # Interpolate vertex colors from reference frames
                     interpolated_colors = _interpolate_vertex_colors_from_references(
                         start_mesh, end_mesh, t
                     )
                     
                     if interpolated_colors is not None:
-                        # 应用插值的顶点颜色
+                        # Apply interpolated vertex colors
                         mesh.vertex_colors = o3d.utility.Vector3dVector(interpolated_colors)
-                        print(f"✅ 为帧 {frame_idx} 应用插值顶点颜色")
+                        print(f"Apply interpolated vertex colors to frame {frame_idx}")
                     
-                    # 确保有法线
+                    # Ensure there are vertex normals
                     if not mesh.has_vertex_normals():
                         mesh.compute_vertex_normals()
                     
@@ -383,25 +392,25 @@ def integrate_vertex_color_processing(interpolator, mesh_folder_path: str):
         return interpolated_frames
     
     def _interpolate_vertex_colors_from_references(start_mesh, end_mesh, t):
-        """从参考帧插值顶点颜色"""
+        """Interpolate vertex colors from reference frames"""
         try:
             start_colors = np.asarray(start_mesh.vertex_colors)
             end_colors = np.asarray(end_mesh.vertex_colors)
             
-            # 线性插值顶点颜色
+            # Linear interpolation of vertex colors
             interpolated_colors = start_colors * (1 - t) + end_colors * t
             return interpolated_colors
             
         except Exception as e:
-            print(f"❌ 顶点颜色插值失败: {e}")
+            print(f"Vertex color interpolation failed: {e}")
             return None
     
-    # 替换插值器的方法
+    # Replace the interpolation method
     interpolator.generate_interpolated_frames = enhanced_generate_interpolated_frames
     
-    print("✅ 顶点颜色处理集成完成")
+    print("Vertex color processing integration completed")
 
-# 为了向后兼容，保留TextureProcessor类名但实际使用VertexColorProcessor
+# For backward compatibility, keep TextureProcessor class name but use VertexColorProcessor internally
 class TextureProcessor(VertexColorProcessor):
-    """向后兼容的TextureProcessor类"""
+    """Backward compatible TextureProcessor class"""
     pass 

@@ -3,3 +3,5 @@ output/
 *.jpg
 *.obj
 /test_output
+*.npz
+/evaluation/data

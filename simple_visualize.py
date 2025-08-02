@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 简单LBS重建可视化脚本
 
@@ -18,7 +17,7 @@ def quick_visualize_frame(frame_idx=10):
         import open3d as o3d
         import matplotlib.pyplot as plt
     except ImportError as e:
-        print(f"ERROR: 导入库失败: {e}")
+        print(f"导入库失败: {e}")
         print("请确保安装了 open3d 和 matplotlib")
         return
     
@@ -30,7 +29,7 @@ def quick_visualize_frame(frame_idx=10):
     # 配置路径
     skeleton_data_dir = "output/skeleton_prediction"
     mesh_folder_path = "D:/Code/VVEditor/Rafa_Approves_hd_4k"
-    weights_path = f"output/skinning_weights_{reference_frame}.npz"  # 使用正确的权重文件名
+    weights_path = "output/skinning_weights_auto.npz"  # 使用正确的权重文件名
     reference_frame = 5
     
     print("正在初始化...")
@@ -45,10 +44,10 @@ def quick_visualize_frame(frame_idx=10):
     canonicalizer.load_mesh_sequence(mesh_folder_path)
     
     if not canonicalizer.load_skinning_weights(weights_path):
-        print("ERROR: 无法加载权重文件")
+        print("无法加载权重文件")
         return
     
-    print(f"SUCCESS: 成功加载权重: {canonicalizer.skinning_weights.shape}")
+    print(f"成功加载权重: {canonicalizer.skinning_weights.shape}")
     
     # 检查所有相关数据的边界
     max_mesh_frame = len(canonicalizer.mesh_files) - 1
@@ -58,7 +57,7 @@ def quick_visualize_frame(frame_idx=10):
     max_available_frame = min(max_mesh_frame, max_transform_frame, max_keypoint_frame)
     
     if frame_idx > max_available_frame:
-        print(f"ERROR: 帧索引 {frame_idx} 超出可用范围")
+        print(f"帧索引 {frame_idx} 超出可用范围")
         print(f"   网格文件: 0-{max_mesh_frame}")
         print(f"   变换矩阵: 0-{max_transform_frame}")
         print(f"   关键点: 0-{max_keypoint_frame}")
@@ -109,20 +108,8 @@ def quick_visualize_frame(frame_idx=10):
     )
     lbs_time = time.time() - start_time
     
-    # 处理顶点数量不匹配的问题
-    if predicted_vertices_norm.shape[0] != target_vertices_norm.shape[0]:
-        print(f"WARNING: 顶点数不匹配 (predicted: {predicted_vertices_norm.shape[0]}, target: {target_vertices_norm.shape[0]})")
-        # 使用较小的数量进行比较
-        min_vertices = min(predicted_vertices_norm.shape[0], target_vertices_norm.shape[0])
-        predicted_vertices_used = predicted_vertices_norm[:min_vertices]
-        target_vertices_used = target_vertices_norm[:min_vertices]
-        print(f"   使用前 {min_vertices} 个顶点进行误差计算")
-    else:
-        predicted_vertices_used = predicted_vertices_norm
-        target_vertices_used = target_vertices_norm
-    
     # 计算误差
-    vertex_errors = np.linalg.norm(predicted_vertices_used - target_vertices_used, axis=1)
+    vertex_errors = np.linalg.norm(predicted_vertices_norm - target_vertices_norm, axis=1)
     
     print(f"重建质量:")
     print(f"   平均误差: {np.mean(vertex_errors):.6f}")
@@ -133,34 +120,26 @@ def quick_visualize_frame(frame_idx=10):
     # 创建可视化mesh
     # 原始mesh (归一化后)
     original_mesh_vis = o3d.geometry.TriangleMesh()
-    original_mesh_vis.vertices = o3d.utility.Vector3dVector(target_vertices_used)
-    # 调整面片索引以匹配顶点数
-    if hasattr(original_mesh, 'triangles') and len(original_mesh.triangles) > 0:
-        max_vertex_idx = len(target_vertices_used) - 1
-        valid_triangles = []
-        for tri in original_mesh.triangles:
-            if np.all(tri <= max_vertex_idx):
-                valid_triangles.append(tri)
-        if valid_triangles:
-            original_mesh_vis.triangles = o3d.utility.Vector3iVector(valid_triangles)
+    original_mesh_vis.vertices = o3d.utility.Vector3dVector(target_vertices_norm)
+    original_mesh_vis.triangles = original_mesh.triangles
     original_mesh_vis.paint_uniform_color([0.1, 0.1, 0.9])  # 蓝色
     
     # 重建mesh
     reconstructed_mesh = o3d.geometry.TriangleMesh()
-    reconstructed_mesh.vertices = o3d.utility.Vector3dVector(predicted_vertices_used)
-    reconstructed_mesh.triangles = original_mesh_vis.triangles  # 使用相同的面片
+    reconstructed_mesh.vertices = o3d.utility.Vector3dVector(predicted_vertices_norm)
+    reconstructed_mesh.triangles = original_mesh.triangles
     reconstructed_mesh.paint_uniform_color([0.9, 0.1, 0.1])  # 红色
     
     # 误差可视化mesh
-    if len(vertex_errors) > 0 and np.max(vertex_errors) > 0:
+    if np.max(vertex_errors) > 0:
         normalized_errors = vertex_errors / np.max(vertex_errors)
     else:
-        normalized_errors = np.zeros_like(vertex_errors)
+        normalized_errors = vertex_errors
     
     colors = plt.cm.plasma(normalized_errors)[:, :3]
     error_mesh = o3d.geometry.TriangleMesh()
-    error_mesh.vertices = o3d.utility.Vector3dVector(target_vertices_used)
-    error_mesh.triangles = original_mesh_vis.triangles  # 使用相同的面片
+    error_mesh.vertices = o3d.utility.Vector3dVector(target_vertices_norm)
+    error_mesh.triangles = original_mesh.triangles
     error_mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
     
     # 并排放置mesh
@@ -206,7 +185,7 @@ def quick_visualize_frame(frame_idx=10):
     o3d.io.write_triangle_mesh(str(output_path / f"frame_{frame_idx:06d}_reconstructed.obj"), reconstructed_mesh)
     o3d.io.write_triangle_mesh(str(output_path / f"frame_{frame_idx:06d}_error.obj"), error_mesh)
 
-    print("SUCCESS: 可视化完成")
+    print("可视化完成")
 
 def batch_export_meshes(frame_list=[10, 20, 30]):
     """批量导出mesh文件供外部软件查看"""
@@ -215,23 +194,23 @@ def batch_export_meshes(frame_list=[10, 20, 30]):
         import open3d as o3d
         import matplotlib.pyplot as plt
     except ImportError as e:
-        print(f"ERROR: 导入库失败: {e}")
+        print(f"导入库失败: {e}")
         return
     
-    from Skinning import AutoSkinning
+    from Skinning import InverseMeshCanonicalizer
     
-    print(f"批量导出 {len(frame_list)} 帧的mesh文件")
+    print(f"💾 批量导出 {len(frame_list)} 帧的mesh文件")
     
     # 初始化
-    canonicalizer = AutoSkinning(
+    canonicalizer = InverseMeshCanonicalizer(
         skeleton_data_dir="output/skeleton_prediction",
         reference_frame_idx=5
     )
     
     canonicalizer.load_mesh_sequence("D:/Code/VVEditor/Rafa_Approves_hd_4k")
     
-    if not canonicalizer.load_skinning_weights("output/skinning_weights_auto.npz"):
-        print("ERROR: 无法加载权重文件")
+    if not canonicalizer.load_skinning_weights("output/skinning_weights_fast.npz"):
+        print("无法加载权重文件")
         return
     
     # 创建输出目录
@@ -240,7 +219,7 @@ def batch_export_meshes(frame_list=[10, 20, 30]):
     
     for frame_idx in frame_list:
         if frame_idx >= len(canonicalizer.mesh_files):
-            print(f"WARNING: 帧 {frame_idx} 超出范围，跳过")
+            print(f"帧 {frame_idx} 超出范围，跳过")
             continue
         
         print(f"处理帧 {frame_idx}...")
@@ -283,42 +262,21 @@ def batch_export_meshes(frame_list=[10, 20, 30]):
                 relative_transforms
             )
             
-            # 处理顶点数量不匹配的问题
-            if predicted_vertices_norm.shape[0] != target_vertices_norm.shape[0]:
-                print(f"   帧 {frame_idx}: 顶点数不匹配 (predicted: {predicted_vertices_norm.shape[0]}, target: {target_vertices_norm.shape[0]})")
-                # 使用较小的数量进行比较
-                min_vertices = min(predicted_vertices_norm.shape[0], target_vertices_norm.shape[0])
-                predicted_vertices_used = predicted_vertices_norm[:min_vertices]
-                target_vertices_used = target_vertices_norm[:min_vertices]
-                print(f"   使用前 {min_vertices} 个顶点")
-            else:
-                predicted_vertices_used = predicted_vertices_norm
-                target_vertices_used = target_vertices_norm
-            
             # 计算误差
-            vertex_errors = np.linalg.norm(predicted_vertices_used - target_vertices_used, axis=1)
-            
-            # 创建适合的面片
-            max_vertex_idx = len(target_vertices_used) - 1
-            valid_triangles = []
-            for tri in original_mesh.triangles:
-                if np.all(tri <= max_vertex_idx):
-                    valid_triangles.append(tri)
+            vertex_errors = np.linalg.norm(predicted_vertices_norm - target_vertices_norm, axis=1)
             
             # 创建并保存mesh
             # 1. 原始mesh
             original_export = o3d.geometry.TriangleMesh()
-            original_export.vertices = o3d.utility.Vector3dVector(target_vertices_used)
-            if valid_triangles:
-                original_export.triangles = o3d.utility.Vector3iVector(valid_triangles)
+            original_export.vertices = o3d.utility.Vector3dVector(target_vertices_norm)
+            original_export.triangles = original_mesh.triangles
             original_path = output_dir / f"frame_{frame_idx:06d}_original.obj"
             o3d.io.write_triangle_mesh(str(original_path), original_export)
             
             # 2. 重建mesh
             reconstructed_export = o3d.geometry.TriangleMesh()
-            reconstructed_export.vertices = o3d.utility.Vector3dVector(predicted_vertices_used)
-            if valid_triangles:
-                reconstructed_export.triangles = o3d.utility.Vector3iVector(valid_triangles)
+            reconstructed_export.vertices = o3d.utility.Vector3dVector(predicted_vertices_norm)
+            reconstructed_export.triangles = original_mesh.triangles
             reconstructed_path = output_dir / f"frame_{frame_idx:06d}_reconstructed.obj"
             o3d.io.write_triangle_mesh(str(reconstructed_path), reconstructed_export)
             
@@ -326,17 +284,16 @@ def batch_export_meshes(frame_list=[10, 20, 30]):
             normalized_errors = vertex_errors / np.max(vertex_errors) if np.max(vertex_errors) > 0 else vertex_errors
             colors = plt.cm.plasma(normalized_errors)[:, :3]
             error_export = o3d.geometry.TriangleMesh()
-            error_export.vertices = o3d.utility.Vector3dVector(target_vertices_used)
-            if valid_triangles:
-                error_export.triangles = o3d.utility.Vector3iVector(valid_triangles)
+            error_export.vertices = o3d.utility.Vector3dVector(target_vertices_norm)
+            error_export.triangles = original_mesh.triangles
             error_export.vertex_colors = o3d.utility.Vector3dVector(colors)
             error_path = output_dir / f"frame_{frame_idx:06d}_error_colored.obj"
             o3d.io.write_triangle_mesh(str(error_path), error_export)
             
-            print(f"   SUCCESS: 帧 {frame_idx} 导出完成 (误差: {np.mean(vertex_errors):.6f})")
+            print(f"帧 {frame_idx} 导出完成 (误差: {np.mean(vertex_errors):.6f})")
             
         except Exception as e:
-            print(f"   ERROR: 帧 {frame_idx} 导出失败: {e}")
+            print(f"帧 {frame_idx} 导出失败: {e}")
     
     print(f"\n所有文件已导出到: {output_dir}")
     print("文件说明:")
@@ -350,17 +307,17 @@ def simple_error_plot(frame_idx=10):
     try:
         import matplotlib.pyplot as plt
     except ImportError:
-        print("ERROR: 需要matplotlib库来显示图表")
+        print("需要matplotlib库来显示图表")
         return
     
-    from Skinning import AutoSkinning
+    from Skinning import InverseMeshCanonicalizer
     
     print(f"生成帧 {frame_idx} 的误差分析图...")
     
     # 初始化并重建
-    canonicalizer = AutoSkinning("output/skeleton_prediction", 5)
+    canonicalizer = InverseMeshCanonicalizer("output/skeleton_prediction", 5)
     canonicalizer.load_mesh_sequence("D:/Code/VVEditor/Rafa_Approves_hd_4k")
-    canonicalizer.load_skinning_weights("output/skinning_weights_auto.npz")
+    canonicalizer.load_skinning_weights("output/skinning_weights_fast.npz")
     
     # 获取误差数据（简化重建过程）
     original_mesh = o3d.io.read_triangle_mesh(str(canonicalizer.mesh_files[frame_idx]))
@@ -393,7 +350,7 @@ def simple_error_plot(frame_idx=10):
     plt.show()
 
 if __name__ == "__main__":
-    print("LBS重建可视化工具")
+    print("🎨 LBS重建可视化工具")
     print("=" * 30)
     
     if len(sys.argv) > 1:

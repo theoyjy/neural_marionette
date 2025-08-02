@@ -13,52 +13,52 @@ import cv2
 
 class SkeletonGLBVisualizer:
     def __init__(self):
-        """初始化GLB可视化器"""
+        """Initialize GLB visualizer"""
         pass
     
     def create_joint_geometry(self, radius=0.02):
-        """创建关节的球体几何体"""
+        """Create sphere geometry for joints"""
         sphere = trimesh.creation.icosphere(subdivisions=1, radius=radius)
         return sphere.vertices, sphere.faces
     
     def create_bone_geometry(self, start_pos, end_pos, radius=0.01):
-        """创建骨骼的圆柱体几何体"""
-        # 计算骨骼方向和长度
+        """Create cylindrical geometry for bones"""
+        # Calculate bone direction and length
         direction = end_pos - start_pos
         length = np.linalg.norm(direction)
         
-        if length < 1e-6:  # 避免长度为0的骨骼
+        if length < 1e-6:  # Avoid zero-length bones
             return np.array([]), np.array([])
         
-        # 创建圆柱体
+        # Create cylinder
         cylinder = trimesh.creation.cylinder(radius=radius, height=length, sections=8)
         
-        # 计算旋转矩阵将圆柱体对齐到骨骼方向
+        # Calculate rotation matrix to align cylinder to bone direction
         up = np.array([0, 0, 1])
         direction_norm = direction / length
         
-        # 如果方向向量与up向量平行，使用不同的参考向量
+        # If direction vector is parallel to up vector, use different reference vector
         if abs(np.dot(direction_norm, up)) > 0.99:
             up = np.array([1, 0, 0])
         
-        # 计算旋转矩阵
+        # Calculate rotation matrix
         right = np.cross(direction_norm, up)
         right = right / np.linalg.norm(right)
         up = np.cross(right, direction_norm)
         
         rotation_matrix = np.column_stack([right, up, direction_norm])
         
-        # 应用变换
+        # Apply transformation
         transform = np.eye(4)
         transform[:3, :3] = rotation_matrix
-        transform[:3, 3] = start_pos + direction * 0.5  # 圆柱体中心位置
+        transform[:3, 3] = start_pos + direction * 0.5  # Cylinder center position
         
         cylinder.apply_transform(transform)
         
         return cylinder.vertices, cylinder.faces
     
     def load_skeleton_data(self, data_dir):
-        """加载保存的骨骼数据"""
+        """Load saved skeleton data"""
         keypoints = np.load(os.path.join(data_dir, 'keypoints.npy'))  # (T, K, 4)
         transforms = np.load(os.path.join(data_dir, 'transforms.npy'))  # (T, K, 4, 4)
         parents = np.load(os.path.join(data_dir, 'parents.npy'))  # (K,)
@@ -72,45 +72,45 @@ class SkeletonGLBVisualizer:
         }
     
     def create_skeleton_mesh(self, keypoints_frame, parents, joint_radius=0.02, bone_radius=0.008):
-        """为单帧创建骨骼网格"""
+        """Create skeleton mesh for single frame"""
         all_vertices = []
         all_faces = []
         vertex_offset = 0
         
-        # 生成关节颜色
+        # Generate joint colors
         np.random.seed(42)
         joint_colors = np.random.rand(len(keypoints_frame), 3)
         all_colors = []
         
-        # 创建关节球体
+        # Create joint spheres
         for i, joints in enumerate(keypoints_frame):
             joint_pos = joints[:3]
-            alpha = joints[-1]  # 置信度
-            if alpha < 0.2:  # 跳过不可见的关节
+            alpha = joints[-1]  # Confidence
+            if alpha < 0.2:  # Skip invisible joints
                 continue
                 
             vertices, faces = self.create_joint_geometry(joint_radius)
-            vertices = vertices + joint_pos[:3]  # 移动到关节位置
+            vertices = vertices + joint_pos[:3]  # Move to joint position
             
             all_vertices.append(vertices)
             all_faces.append(faces + vertex_offset)
             
-            # 添加颜色
+            # Add colors
             joint_color = joint_colors[i]
             colors = np.tile(joint_color, (len(vertices), 1))
             all_colors.append(colors)
             
             vertex_offset += len(vertices)
         
-        # 创建骨骼圆柱体
+        # Create bone cylinders
         for child_idx, parent_idx in enumerate(parents):
-            if parent_idx == child_idx:  # 根关节
+            if parent_idx == child_idx:  # Root joint
                 continue
             
             child_alpha = keypoints_frame[child_idx, -1]
             parent_alpha = keypoints_frame[parent_idx, -1]
             
-            if child_alpha < 0.2 or parent_alpha < 0.2:  # 跳过不可见的关节
+            if child_alpha < 0.2 or parent_alpha < 0.2:  # Skip invisible joints
                 continue
             
             child_pos = keypoints_frame[child_idx, :3]
@@ -122,7 +122,7 @@ class SkeletonGLBVisualizer:
                 all_vertices.append(vertices)
                 all_faces.append(faces + vertex_offset)
                 
-                # 骨骼使用绿色
+                # Bones use green color
                 bone_color = np.array([0.2, 0.8, 0.2])
                 colors = np.tile(bone_color, (len(vertices), 1))
                 all_colors.append(colors)
@@ -132,7 +132,7 @@ class SkeletonGLBVisualizer:
         if len(all_vertices) == 0:
             return None, None, None
         
-        # 合并所有几何体
+        # Merge all geometries
         vertices = np.vstack(all_vertices)
         faces = np.vstack(all_faces)
         colors = np.vstack(all_colors)

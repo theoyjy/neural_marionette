@@ -2,18 +2,18 @@
 """
 Volumetric Video Interpolation Pipeline
 
-完整的体素视频插值流水线，包括：
-1. 骨骼预测 (SkelSequencePrediction.py)
-2. 插值生成 (Interpolate.py) - 支持多种插值方法
-3. 蒙皮权重优化 (Skinning.py)
-4. 纹理处理 (texture_utils.py) - 新增纹理支持
+Complete volumetric video interpolation pipeline including:
+1. Skeleton Prediction (SkelSequencePrediction.py)
+2. Interpolation Generation (Interpolate.py) - Supports multiple interpolation methods
+3. Skinning Weight Optimization (Skinning.py)
+4. Texture Processing (texture_utils.py) - Newly added texture support
 
-支持的插值方法：
-- baseline: 基础插值方法
-- dual_reference: 双参考帧插值
-- adaptive_similarity: 相似帧自适应插值
+Supported interpolation methods:
+- baseline: Basic interpolation method
+- dual_reference: Dual reference frame interpolation
+- adaptive_similarity: Adaptive similarity frame interpolation
 
-使用流程：
+Usage:
 python volumetric_interpolation_pipeline.py <folder_path> <start_frame> <end_frame> [num_interpolate] [--method] [--texture]
 """
 
@@ -25,12 +25,12 @@ import time
 import hashlib
 import json
 
-# 导入纹理处理模块
+# Import texture processing module
 try:
     from texture_utils import VertexColorProcessor, integrate_vertex_color_processing
     VERTEX_COLOR_AVAILABLE = True
 except ImportError:
-    print("警告: 顶点颜色处理模块不可用，将跳过顶点颜色处理")
+    print("Warning: Vertex color processing module not available, will skip vertex color processing")
     VERTEX_COLOR_AVAILABLE = False
 
 
@@ -59,39 +59,63 @@ def check_dependencies():
     print("All Dependencies Checked")
     return True
 
-def setup_paths(folder_path, method="baseline", start_frame=0, end_frame=0, num_interpolate=10):
+def setup_paths(folder_path, method="baseline", start_frame=0, end_frame=0, num_interpolate=10, 
+                evaluation_mode=False, evaluation_output_dir=None):
     """Set Output Paths"""
     folder_path = Path(folder_path)
     
-    # create output directory structure
-    output_base = Path("output")
-    output_base.mkdir(exist_ok=True)
-    
-    # 使用稳定的哈希算法为每个输入文件夹创建唯一的输出目录
-    folder_str = str(folder_path.absolute())
-    folder_hash = hashlib.md5(folder_str.encode('utf-8')).hexdigest()[-8:]  # 使用MD5哈希的后8位
-    output_dir = output_base / f"pipeline_{folder_path.name}_{folder_hash}"
-    output_dir.mkdir(exist_ok=True)
-    
-    # 子目录 - 统一的结构
-    skeleton_dir = output_dir / "skeleton_prediction"
-    skinning_dir = output_dir / "skinning_weights"
-    
-    skeleton_dir.mkdir(exist_ok=True)
-    skinning_dir.mkdir(exist_ok=True)
-    
-    # 插值结果目录 - 按方法区分
-    interpolation_root_dir = output_dir / f"interpolation_{method}"
-    interpolation_dir = interpolation_root_dir / f"{start_frame}_{end_frame}_{num_interpolate}"
-    interpolation_root_dir.mkdir(exist_ok=True)
-    interpolation_dir.mkdir(exist_ok=True)
-    
-    print(f"Output Directory:")
-    print(f"Input Folder: {folder_path}")
-    print(f"Folder Hash: {folder_hash}")
-    print(f"Interpolation Method: {method}")
-    print(f"Output Directory: {output_dir}")
-    print(f"Interpolation Results: {interpolation_dir}")
+    if evaluation_mode and evaluation_output_dir:
+        # 评估模式：使用指定的输出目录
+        output_dir = Path(evaluation_output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 子目录 - 统一的结构
+        skeleton_dir = output_dir / "skeleton_prediction"
+        skinning_dir = output_dir / "skinning_weights"
+        
+        skeleton_dir.mkdir(exist_ok=True)
+        skinning_dir.mkdir(exist_ok=True)
+        
+        # 插值结果目录 - 按方法区分
+        interpolation_dir = output_dir / f"intp"
+        interpolation_dir.mkdir(exist_ok=True)
+        
+        print(f"Evaluation Mode Output Directory:")
+        print(f"Input Folder: {folder_path}")
+        print(f"Evaluation Output: {output_dir}")
+        print(f"Interpolation Method: {method}")
+        print(f"Interpolation Results: {interpolation_dir}")
+        
+    else:
+        # 标准模式：使用哈希目录
+        output_base = Path("output")
+        output_base.mkdir(exist_ok=True)
+        
+        # 使用稳定的哈希算法为每个输入文件夹创建唯一的输出目录
+        folder_str = str(folder_path.absolute())
+        folder_hash = hashlib.md5(folder_str.encode('utf-8')).hexdigest()[-8:]  # 使用MD5哈希的后8位
+        output_dir = output_base / f"pipeline_{folder_path.name}_{folder_hash}"
+        output_dir.mkdir(exist_ok=True)
+        
+        # 子目录 - 统一的结构
+        skeleton_dir = output_dir / "skeleton_prediction"
+        skinning_dir = output_dir / "skinning_weights"
+        
+        skeleton_dir.mkdir(exist_ok=True)
+        skinning_dir.mkdir(exist_ok=True)
+        
+        # 插值结果目录 - 按方法区分
+        interpolation_root_dir = output_dir / f"interpolation_{method}"
+        interpolation_dir = interpolation_root_dir / f"{start_frame}_{end_frame}_{num_interpolate}"
+        interpolation_root_dir.mkdir(exist_ok=True)
+        interpolation_dir.mkdir(exist_ok=True)
+        
+        print(f"Standard Mode Output Directory:")
+        print(f"Input Folder: {folder_path}")
+        print(f"Folder Hash: {folder_hash}")
+        print(f"Interpolation Method: {method}")
+        print(f"Output Directory: {output_dir}")
+        print(f"Interpolation Results: {interpolation_dir}")
     
     return {
         'base': output_dir,
@@ -119,7 +143,7 @@ def step1_skeleton_prediction(folder_path, output_paths):
     parents_file = os.path.join(skeleton_dir, 'parents.npy')
     
     if os.path.exists(keypoints_file) and os.path.exists(transforms_file) and os.path.exists(parents_file):
-        print(f"✅ 发现已保存的骨骼预测结果，跳过预测步骤")
+        print(f"SUCCESS Found existing skeleton prediction results, skipping prediction step")
         print(f"  - Keypoints: {keypoints_file}")
         print(f"  - Transforms: {transforms_file}")
         print(f"  - Parents: {parents_file}")
@@ -138,19 +162,19 @@ def step1_skeleton_prediction(folder_path, output_paths):
             opt_path=opt_path
         )
         
-        # 加载网格序列
-        print("加载网格序列...")
+        # Load mesh sequence
+        print("Loading mesh sequence...")
         voxel_sequence, mesh_sequence, points_sequence = predictor.load_mesh_sequence(
             str(folder_path), file_pattern="*.obj", max_frames=160
         )
         
-        # 预测骨骼
+        # Predict skeleton
         prediction_start = time.time()
         results = predictor.predict_skeleton_sequence(voxel_sequence)
         prediction_time = time.time() - prediction_start
         
-        # 保存结果
-        print("保存骨骼预测结果...")
+        # Save results
+        print("Saving skeleton prediction results...")
         predictor.save_skeleton_results(results, str(output_paths['skeleton']), points_sequence)
         
         success = results is not None
@@ -167,25 +191,25 @@ def step1_skeleton_prediction(folder_path, output_paths):
             return False
             
     except Exception as e:
-        print(f"骨骼预测失败: {e}")
+        print(f"Skeleton prediction failed: {e}")
         import traceback
         traceback.print_exc()
         return False
 
-def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, output_paths, method="baseline", 
+def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, output_paths, evaluation_mode, method="baseline", 
                        save_standard_obj=False, save_npy_files=False):
     """
-    Step 2: 插值生成
+    Step 2: Interpolation Generation
     
     Args:
-        folder_path: 输入文件夹路径
-        start_frame: 起始帧索引（排序后文件列表的索引，从0开始）
-        end_frame: 结束帧索引（排序后文件列表的索引，从0开始）
-        num_interpolate: 插值帧数
-        output_paths: 输出路径字典
-        method: 插值方法
-        save_standard_obj: 是否保存标准obj文件（避免重复）
-        save_npy_files: 是否保存npy文件（通常不需要）
+        folder_path: Input folder path
+        start_frame: Start frame index (index in sorted file list, starting from 0)
+        end_frame: End frame index (index in sorted file list, starting from 0)
+        num_interpolate: Number of interpolated frames
+        output_paths: Output paths dictionary
+        method: Interpolation method
+        save_standard_obj: Whether to save standard obj files (avoid duplication)
+        save_npy_files: Whether to save npy files (usually not needed)
     """
     print("\n" + "="*60)
     print(f"Step 2: Interpolation Generation ({method})")
@@ -204,10 +228,10 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
     print(f"Weights Directory: {output_paths['skinning']}")
     
     try:
-        # 初始化顶点颜色处理器
+        # Initialize vertex color processor
         vertex_color_processor = None
         if VERTEX_COLOR_AVAILABLE:
-            print(f"初始化顶点颜色处理器...")
+            print(f"Initializing vertex color processor...")
             vertex_color_processor = VertexColorProcessor(str(folder_path))
         
         # select interpolator based on method
@@ -255,9 +279,10 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
         print(f"  - Interpolator Type: {type(interpolator).__name__}")
         print(f"  - Interpolator Output Directory: {interpolator.output_dir}")
         
-        # 集成顶点颜色处理（如果启用）
-        if vertex_color_processor is not None:
-            print(f"集成顶点颜色处理到插值器...")
+        # Integrate vertex color processing (if enabled)
+        print(f"Evaluation Mode: {evaluation_mode}")
+        if vertex_color_processor is not None and not evaluation_mode:
+            print(f"Integrating vertex color processing into interpolator...")
             integrate_vertex_color_processing(interpolator, str(folder_path))
         
         # generate interpolated frames
@@ -296,13 +321,13 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
         return True
         
     except Exception as e:
-        print(f"插值生成失败: {e}")
+        print(f"Interpolation generation failed: {e}")
         import traceback
         traceback.print_exc()
         return False
 
 def generate_skinning_weights_path(start_frame, end_frame, step=1):
-    """生成蒙皮权重文件路径"""
+    """Generate skinning weights file path"""
     return f"skinning_weights_ref{start_frame}_opt{start_frame}-{end_frame}_step{step}.npz"
 
 def main():
@@ -315,6 +340,8 @@ def main():
                        default="baseline", help="Interpolation Method (Default: baseline)")
     parser.add_argument("--skip-skinning", action="store_true", help="Skip skinning weights optimization")
     parser.add_argument("--result_path", help="Results Info Saved Once Interpolation Finished")
+    parser.add_argument("--evaluation-mode", action="store_true", help="Enable evaluation mode with unified output directory")
+    parser.add_argument("--evaluation-output-dir", help="Output directory for evaluation mode (required when --evaluation-mode is used)")
 
     args = parser.parse_args()
     
@@ -322,13 +349,18 @@ def main():
     print("Volumetric Video Interpolation Pipeline")
     print("="*60)
     
-    # 检查依赖
+    # Check dependencies
     if not check_dependencies():
         return
     
-    # 检查顶点颜色处理可用性
+    # Check vertex color processing availability
     if not VERTEX_COLOR_AVAILABLE:
-        print("错误: 顶点颜色处理不可用，请检查依赖项")
+        print("Error: Vertex color processing not available, please check dependencies")
+        return
+    
+    # Validate evaluation mode parameters
+    if args.evaluation_mode and not args.evaluation_output_dir:
+        print("Error: Evaluation mode requires --evaluation-output-dir parameter")
         return
     
     # 设置输出路径
@@ -337,7 +369,9 @@ def main():
         args.method, 
         args.start_frame, 
         args.end_frame, 
-        args.num_interpolate
+        args.num_interpolate,
+        evaluation_mode=args.evaluation_mode,
+        evaluation_output_dir=args.evaluation_output_dir
     )
     
     total_start_time = time.time()
@@ -348,12 +382,12 @@ def main():
         return
     
     # Step 2: Interpolation Generation
-    print(f"\n开始插值生成...")
-    print(f"输入文件夹: {args.folder_path}")
-    print(f"起始帧索引: {args.start_frame} (排序后文件列表的索引，从0开始)")
-    print(f"结束帧索引: {args.end_frame} (排序后文件列表的索引，从0开始)")
-    print(f"插值帧数: {args.num_interpolate}")
-    print(f"插值方法: {args.method}")
+    print(f"\nStarting interpolation generation...")
+    print(f"Input folder: {args.folder_path}")
+    print(f"Start frame index: {args.start_frame} (index in sorted file list, starting from 0)")
+    print(f"End frame index: {args.end_frame} (index in sorted file list, starting from 0)")
+    print(f"Interpolation frames: {args.num_interpolate}")
+    print(f"Interpolation method: {args.method}")
     
     if not step2_interpolation(
         args.folder_path, 
@@ -361,9 +395,11 @@ def main():
         args.end_frame, 
         args.num_interpolate, 
         output_paths, 
-        args.method
+        args.evaluation_mode,
+        args.method,
+        args.evaluation_mode
     ):
-        print("插值生成失败，退出...")
+        print("Interpolation generation failed, exiting...")
         return
     
     total_time = time.time() - total_start_time

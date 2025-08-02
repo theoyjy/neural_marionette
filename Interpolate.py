@@ -55,23 +55,23 @@ class VolumetricInterpolator:
         try:
             # 对于Neural Marionette，跳过骨骼数据加载
             if hasattr(self, 'use_network_keypoints') and self.use_network_keypoints:
-                print(f"✅ Neural Marionette模式 - 跳过骨骼数据加载")
-                print(f"  - 将使用网络生成的关键点")
+                print(f"Neural Marionette mode - skip loading skeleton data")
+                print(f"  - Use network generated keypoints")
                 # 设置默认值
                 self.num_frames = 40  # demo数据的帧数
-                self.num_joints = 24  # 默认关节数
+                self.num_joints = 24  # default number of joints
                 return True
             
-            # 加载关键点数据 [num_frames, num_joints, 4] (x, y, z, confidence)
+            # Load keypoints data [num_frames, num_joints, 4] (x, y, z, confidence)
             self.keypoints = np.load(self.skeleton_data_dir / 'keypoints.npy')
             
-            # 加载变换矩阵 [num_frames, num_joints, 4, 4]
+            # Load transformation matrix [num_frames, num_joints, 4, 4]
             self.transforms = np.load(self.skeleton_data_dir / 'transforms.npy')
             
-            # 加载父节点关系 [num_joints]
+            # Load parent node relationship [num_joints]
             self.parents = np.load(self.skeleton_data_dir / 'parents.npy')
             
-            # 加载旋转矩阵 [num_frames, num_joints, 3, 3]
+            # Load rotation matrix [num_frames, num_joints, 3, 3]
             if (self.skeleton_data_dir / 'rotations.npy').exists():
                 self.rotations = np.load(self.skeleton_data_dir / 'rotations.npy')
             else:
@@ -89,7 +89,7 @@ class VolumetricInterpolator:
             raise ValueError(f"Cannot load skeleton data: {e}")
     
     def load_mesh_sequence(self):
-        """加载网格序列"""
+        """Load mesh sequence"""
         self.mesh_files = sorted(list(self.mesh_folder_path.glob("*.obj")))
         
         if len(self.mesh_files) == 0:
@@ -103,7 +103,7 @@ class VolumetricInterpolator:
             print(f"Warning: Mesh file count ({len(self.mesh_files)}) doesn't match skeleton frame count ({self.num_frames})")
     
     def load_skinning_weights(self, weights_path):
-        """加载蒙皮权重"""
+        """Load skinning weights"""
         try:
             data = np.load(weights_path)
             self.skinning_weights = data['weights']
@@ -124,7 +124,7 @@ class VolumetricInterpolator:
             max_optimize_frames: maximum number of optimization frames
             
         Returns:
-            success: 是否成功
+            success: whether successful
         """
         start_time = time.time()
         
@@ -136,24 +136,38 @@ class VolumetricInterpolator:
             print(f"  - Optimization Frame Range: {frame_start}-{frame_end}")
             print(f"  - Maximum Optimization Frames: {max_optimize_frames}")
             
-            # 选择reference frame附近的帧进行优化（-5到+5范围）
+            # Select all available frames for optimization
+            # New logic: use all available mesh files in the directory
             reference_frame = frame_start
             available_frames = []
-            for i in range(max(0, reference_frame - 5), min(self.num_frames, reference_frame + 6)):
-                available_frames.append(i)
             
-            # 限制最多使用max_optimize_frames个帧
+            # Check how many frame_XXX.obj files are in the directory
+            mesh_dir = Path(self.mesh_folder_path)
+            frame_files = sorted(mesh_dir.glob("frame_*.obj"))
+            
+            if len(frame_files) > 2:
+                # If there are extra frame files, use all available frames
+                for i in range(len(frame_files)):
+                    available_frames.append(i)
+                print(f"  - Found {len(frame_files)} frame files, will be used for skinning weight optimization")
+            else:
+                # Fall back to original logic
+                for i in range(max(0, reference_frame - 5), min(self.num_frames, reference_frame + 6)):
+                    available_frames.append(i)
+                print(f"  - Use default reference frame nearby frame strategy")
+            
+            # Limit to use at most max_optimize_frames frames
             if len(available_frames) > max_optimize_frames:
-                # 优先选择reference frame附近的帧
+                # Prioritize frames around reference frame
                 center_idx = available_frames.index(reference_frame)
                 half_range = max_optimize_frames // 2
                 
-                # 从中心向两边扩展选择帧
+                # Expand selection of frames from center to both sides
                 start_idx = max(0, center_idx - half_range)
                 end_idx = min(len(available_frames), center_idx + half_range + 1)
                 optimize_frames = available_frames[start_idx:end_idx]
                 
-                # 如果还不够max_optimize_frames个，从两边补充
+                # If not enough max_optimize_frames, supplement from both sides
                 while len(optimize_frames) < max_optimize_frames and (start_idx > 0 or end_idx < len(available_frames)):
                     if start_idx > 0:
                         start_idx -= 1
@@ -170,16 +184,16 @@ class VolumetricInterpolator:
                 print("No frames to optimize")
                 return False
             
-            # 统一权重文件命名格式
+            # Unify weight file naming format
             weights_filename = f"ref{frame_start}_opt{optimize_frames[0]}-{optimize_frames[-1]}_num{len(optimize_frames)}.npz"
             
-            # 确保使用统一的skinning_weights目录 - 修复路径生成逻辑
-            # 始终使用基础输出目录下的skinning_weights文件夹
+            # Ensure using unified skinning_weights directory - fix path generation logic
+            # Always use skinning_weights folder in the base output directory
             if hasattr(self, 'output_dir') and self.output_dir:
-                # 使用统一的skinning_weights目录
+                # Use unified skinning_weights directory
                 weights_path = Path(self.output_dir) / "skinning_weights" / weights_filename
             else:
-                # 否则使用默认路径
+                # Otherwise use default path
                 weights_path = Path("output") / "skinning_weights" / weights_filename
             
             print(f"  - Weights File Path: {weights_path}")
@@ -190,10 +204,10 @@ class VolumetricInterpolator:
                 self.load_skinning_weights(str(weights_path))
                 return True
             
-            # 创建输出目录
+            # Create output directory
             weights_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # 初始化Skinning系统
+            # Initialize Skinning system
             skinner = AutoSkinning(
                 skeleton_data_dir=self.skeleton_data_dir,
                 reference_frame_idx=frame_start
@@ -204,14 +218,15 @@ class VolumetricInterpolator:
             
             print(f"  - Optimization Frames: {optimize_frames}")
             
-            # 直接使用Skinning的优化方法
-            print(f"    Call Skinning.py's optimize_reference_frame_skinning...")
+            # Use multi-thread optimization method
+            print(f"    Call Skinning.py's optimize_reference_frame_skinning with multithread...")
             optimization_start = time.time()
             
+            # First try optimization, then apply to all frames
             skinner.skinning_weights = skinner.optimize_reference_frame_skinning(
                 optimization_frames=optimize_frames,
                 regularization_lambda=0.01,
-                max_iter=200  # 适中的迭代次数
+                max_iter=100  # Reduce iterations in evaluation mode to save time
             )
             
             optimization_time = time.time() - optimization_start
@@ -221,11 +236,11 @@ class VolumetricInterpolator:
                 print(f"  - Weight Matrix Shape: {skinner.skinning_weights.shape}")
                 print(f"  - Optimization Time: {optimization_time:.2f} seconds")
                 
-                # 保存权重
+                # Save weights
                 skinner.save_skinning_weights(str(weights_path))
                 print(f"  - Weights Saved to: {weights_path}")
                 
-                # 加载优化后的权重到插值器
+                # Load optimized weights to interpolator
                 self.load_skinning_weights(str(weights_path))
                 print(f"Weights Loaded to Interpolator")
                 
@@ -243,7 +258,7 @@ class VolumetricInterpolator:
             return False
     
     def compute_mesh_normalization_params(self, mesh):
-        """计算网格归一化参数"""
+        """Compute mesh normalization parameters"""
         vertices = np.asarray(mesh.vertices)
         
         bmax = np.amax(vertices, axis=0)
@@ -262,26 +277,26 @@ class VolumetricInterpolator:
         return params
     
     def normalize_mesh_vertices(self, vertices, normalization_params):
-        """归一化网格顶点"""
+        """Normalize mesh vertices"""
         params = normalization_params
         trans_offset = np.array([params['x_trans'], 0, params['z_trans']])
         normalized = ((vertices - params['bmin']) * params['scale'] / (params['blen'] + 1e-5)) * 2 - 1 + trans_offset
         return normalized
     
     def apply_lbs_transform(self, rest_vertices, weights, transforms):
-        """应用改进的Linear Blend Skinning变换，保持网格体积和骨骼对齐"""
+        """Apply improved Linear Blend Skinning transformation, keep mesh volume and skeleton aligned"""
         num_vertices = rest_vertices.shape[0]
         num_joints = transforms.shape[0]
         
         rest_vertices_homo = np.hstack([rest_vertices, np.ones((num_vertices, 1))])
         transformed_vertices = np.zeros((num_vertices, 3))
         
-        # 改进的权重处理：确保权重和为1且非负
+        # Improved weight processing: ensure weights sum to 1 and are non-negative
         weights = np.maximum(weights, 0)
         weight_sums = np.sum(weights, axis=1, keepdims=True)
         weights = weights / (weight_sums + 1e-8)
         
-        # 计算每个关节的变换贡献
+        # Compute contribution of each joint's transformation
         joint_contributions = []
         for j in range(num_joints):
             joint_transform = transforms[j]
@@ -290,248 +305,248 @@ class VolumetricInterpolator:
             joint_weights = weights[:, j:j+1]
             joint_contributions.append(joint_weights * transformed_xyz)
         
-        # 应用权重混合
+        # Apply weight mixing
         for contribution in joint_contributions:
             transformed_vertices += contribution
         
-        # 体积保持：计算原始网格的体积特征
+        # Volume preservation: compute volume features of the original mesh
         if num_vertices > 3:
-            # 计算原始网格的边界框
+            # Compute bounding box of the original mesh
             bbox_min = np.min(rest_vertices, axis=0)
             bbox_max = np.max(rest_vertices, axis=0)
             original_volume = np.prod(bbox_max - bbox_min)
             
-            # 计算变换后网格的边界框
+            # Compute bounding box of the transformed mesh
             bbox_min_transformed = np.min(transformed_vertices, axis=0)
             bbox_max_transformed = np.max(transformed_vertices, axis=0)
             transformed_volume = np.prod(bbox_max_transformed - bbox_min_transformed)
             
-            # 如果体积变化过大，进行缩放调整
+            # If volume change is too large, perform scaling adjustment
             volume_ratio = transformed_volume / (original_volume + 1e-8)
             if volume_ratio < 0.5 or volume_ratio > 2.0:
-                # 计算缩放因子
+                # Compute scaling factor
                 scale_factor = np.power(volume_ratio, 1.0/3.0)  # 立方根
-                # 计算网格中心
+                # Compute mesh center
                 center = np.mean(transformed_vertices, axis=0)
-                # 应用缩放
+                # Apply scaling
                 transformed_vertices = center + scale_factor * (transformed_vertices - center)
         
         return transformed_vertices
     
     def align_mesh_with_skeleton(self, mesh_vertices, skeleton_transforms):
         """
-        将网格顶点与骨骼对齐
+        Align mesh vertices with skeleton
         
         Args:
-            mesh_vertices: 网格顶点 [N, 3]
-            skeleton_transforms: 骨骼变换矩阵 [K, 4, 4]
+            mesh_vertices: mesh vertices [N, 3]
+            skeleton_transforms: skeleton transformation matrix [K, 4, 4]
             
         Returns:
-            aligned_vertices: 对齐后的顶点
+            aligned_vertices: aligned vertices
         """
-        # 计算网格中心
+        # Compute mesh center
         mesh_center = np.mean(mesh_vertices, axis=0)
         
-        # 计算骨骼中心（使用所有关节的平均位置）
+        # Compute skeleton center (using average position of all joints)
         joint_positions = skeleton_transforms[:, :3, 3]  # [K, 3]
         skeleton_center = np.mean(joint_positions, axis=0)
         
-        # 计算偏移量
+        # Compute offset
         offset = skeleton_center - mesh_center
         
-        # 应用偏移
+        # Apply offset
         aligned_vertices = mesh_vertices + offset
         
         return aligned_vertices
     
     def interpolate_skeleton_transforms(self, frame_start, frame_end, t):
         """
-        使用相对变换插值骨骼变换（与Skinning.py保持一致）
+        Interpolate skeleton transforms using relative transformation (consistent with Skinning.py)
         
-        关键修复：
-        1. 使用相对变换而不是绝对变换
-        2. 保持与Skinning.py相同的坐标系处理
-        3. 确保骨骼长度和姿态正确
+        Key fixes:
+        1. Use relative transformation instead of absolute transformation
+        2. Keep consistent coordinate system processing with Skinning.py
+        3. Ensure correct skeleton length and pose
         
         Args:
-            frame_start: 起始帧索引
-            frame_end: 结束帧索引
-            t: 插值参数 [0, 1]
+            frame_start: start frame index
+            frame_end: end frame index
+            t: interpolation parameter [0, 1]
             
         Returns:
-            interpolated_transforms: 插值后的变换矩阵 [num_joints, 4, 4]
+            interpolated_transforms: interpolated transformation matrix [num_joints, 4, 4]
         """
-        # 获取参考帧（使用起始帧作为参考）
+        # Get reference frame (use start frame as reference)
         reference_frame = frame_start
         
-        # 获取变换矩阵
+        # Get transformation matrix
         transforms_start = self.transforms[frame_start]  # [num_joints, 4, 4]
         transforms_end = self.transforms[frame_end]      # [num_joints, 4, 4]
         transforms_ref = self.transforms[reference_frame] # [num_joints, 4, 4]
         
-        # 计算相对变换（与Skinning.py保持一致）
+        # Compute relative transformation (consistent with Skinning.py)
         relative_transforms_start = np.zeros_like(transforms_start)
         relative_transforms_end = np.zeros_like(transforms_end)
         
         for j in range(self.num_joints):
-            # 计算从参考帧到起始帧的相对变换
+            # Compute relative transformation from reference frame to start frame
             if np.linalg.det(transforms_ref[j][:3, :3]) > 1e-6:
                 ref_inv = np.linalg.inv(transforms_ref[j])
                 relative_transforms_start[j] = transforms_start[j] @ ref_inv
             else:
                 relative_transforms_start[j] = np.eye(4)
             
-            # 计算从参考帧到结束帧的相对变换
+            # Compute relative transformation from reference frame to end frame
             if np.linalg.det(transforms_ref[j][:3, :3]) > 1e-6:
                 ref_inv = np.linalg.inv(transforms_ref[j])
                 relative_transforms_end[j] = transforms_end[j] @ ref_inv
             else:
                 relative_transforms_end[j] = np.eye(4)
         
-        # 插值相对变换
+        # Interpolate relative transformation
         interpolated_relative_transforms = np.zeros_like(transforms_start)
         
         for j in range(self.num_joints):
-            # 提取旋转部分 (3x3)
+            # Extract rotation part (3x3)
             R_start = relative_transforms_start[j][:3, :3]
             R_end = relative_transforms_end[j][:3, :3]
             
-            # 提取平移部分
+            # Extract translation part
             pos_start = relative_transforms_start[j][:3, 3]
             pos_end = relative_transforms_end[j][:3, 3]
             
-            # SLERP插值旋转
+            # SLERP interpolation of rotation
             quat_start = R.from_matrix(R_start).as_quat()
             quat_end = R.from_matrix(R_end).as_quat()
             
-            # 确保四元数在同一半球
+            # Ensure quaternions are in the same hemisphere
             if np.dot(quat_start, quat_end) < 0:
                 quat_end = -quat_end
             
-            # SLERP插值
+            # SLERP interpolation
             quat_interp = (1-t) * quat_start + t * quat_end
             quat_interp = quat_interp / np.linalg.norm(quat_interp)
             R_interp = R.from_quat(quat_interp).as_matrix()
             
-            # 线性插值平移
+            # Linear interpolation of translation
             pos_interp = (1-t) * pos_start + t * pos_end
             
-            # 构建相对变换矩阵
+            # Build relative transformation matrix
             relative_transform_interp = np.eye(4)
             relative_transform_interp[:3, :3] = R_interp
             relative_transform_interp[:3, 3] = pos_interp
             interpolated_relative_transforms[j] = relative_transform_interp
         
-        # 将相对变换转换回绝对变换
+        # Convert relative transformation back to absolute transformation
         interpolated_transforms = np.zeros_like(transforms_start)
         
         for j in range(self.num_joints):
-            # 从参考帧变换到插值帧
+            # Transform from reference frame to interpolated frame
             interpolated_transforms[j] = interpolated_relative_transforms[j] @ transforms_ref[j]
         
         return interpolated_transforms
     
     def interpolate_skeleton_transforms_with_reference(self, frame_start, frame_end, t, reference_frame):
         """
-        使用指定参考帧插值骨骼变换
+        Interpolate skeleton transforms using specified reference frame
         
         Args:
-            frame_start: 起始帧索引
-            frame_end: 结束帧索引
-            t: 插值参数 [0, 1]
-            reference_frame: 参考帧索引
+            frame_start: start frame index
+            frame_end: end frame index
+            t: interpolation parameter [0, 1]
+            reference_frame: reference frame index
             
         Returns:
-            interpolated_transforms: 插值后的变换矩阵 [num_joints, 4, 4]
+            interpolated_transforms: interpolated transformation matrix [num_joints, 4, 4]
         """
-        # 获取变换矩阵
+        # Get transformation matrix
         transforms_start = self.transforms[frame_start]  # [num_joints, 4, 4]
         transforms_end = self.transforms[frame_end]      # [num_joints, 4, 4]
         transforms_ref = self.transforms[reference_frame] # [num_joints, 4, 4]
         
-        # 计算相对变换（使用指定参考帧）
+        # Compute relative transformation (using specified reference frame)
         relative_transforms_start = np.zeros_like(transforms_start)
         relative_transforms_end = np.zeros_like(transforms_end)
         
         for j in range(self.num_joints):
-            # 计算从参考帧到起始帧的相对变换
+            # Compute relative transformation from reference frame to start frame
             if np.linalg.det(transforms_ref[j][:3, :3]) > 1e-6:
                 ref_inv = np.linalg.inv(transforms_ref[j])
                 relative_transforms_start[j] = transforms_start[j] @ ref_inv
             else:
                 relative_transforms_start[j] = np.eye(4)
             
-            # 计算从参考帧到结束帧的相对变换
+            # Compute relative transformation from reference frame to end frame
             if np.linalg.det(transforms_ref[j][:3, :3]) > 1e-6:
                 ref_inv = np.linalg.inv(transforms_ref[j])
                 relative_transforms_end[j] = transforms_end[j] @ ref_inv
             else:
                 relative_transforms_end[j] = np.eye(4)
         
-        # 插值相对变换
+        # Interpolate relative transformation
         interpolated_relative_transforms = np.zeros_like(transforms_start)
         
         for j in range(self.num_joints):
-            # 提取旋转部分 (3x3)
+            # Extract rotation part (3x3)
             R_start = relative_transforms_start[j][:3, :3]
             R_end = relative_transforms_end[j][:3, :3]
             
-            # 提取平移部分
+            # Extract translation part
             pos_start = relative_transforms_start[j][:3, 3]
             pos_end = relative_transforms_end[j][:3, 3]
             
-            # SLERP插值旋转
+            # SLERP interpolation of rotation
             quat_start = R.from_matrix(R_start).as_quat()
             quat_end = R.from_matrix(R_end).as_quat()
             
-            # 确保四元数在同一半球
+            # Ensure quaternions are in the same hemisphere
             if np.dot(quat_start, quat_end) < 0:
                 quat_end = -quat_end
             
-            # SLERP插值
+            # SLERP interpolation
             quat_interp = (1-t) * quat_start + t * quat_end
             quat_interp = quat_interp / np.linalg.norm(quat_interp)
             R_interp = R.from_quat(quat_interp).as_matrix()
             
-            # 线性插值平移
+            # Linear interpolation of translation
             pos_interp = (1-t) * pos_start + t * pos_end
             
-            # 构建相对变换矩阵
+            # Build relative transformation matrix
             relative_transform_interp = np.eye(4)
             relative_transform_interp[:3, :3] = R_interp
             relative_transform_interp[:3, 3] = pos_interp
             interpolated_relative_transforms[j] = relative_transform_interp
         
-        # 将相对变换转换回绝对变换
+        # Convert relative transformation back to absolute transformation
         interpolated_transforms = np.zeros_like(transforms_start)
         
         for j in range(self.num_joints):
-            # 从参考帧变换到插值帧
+            # Transform from reference frame to interpolated frame
             interpolated_transforms[j] = interpolated_relative_transforms[j] @ transforms_ref[j]
         
         return interpolated_transforms
     
     def interpolate_keypoints(self, frame_start, frame_end, t):
         """
-        插值关键点位置
+        Interpolate keypoints positions
         
         Args:
-            frame_start: 起始帧索引
-            frame_end: 结束帧索引
-            t: 插值参数 [0, 1]
+            frame_start: start frame index
+            frame_end: end frame index
+            t: interpolation parameter [0, 1]
             
         Returns:
-            interpolated_keypoints: 插值后的关键点 [num_joints, 4]
+            interpolated_keypoints: interpolated keypoints [num_joints, 4]
         """
         keypoints_start = self.keypoints[frame_start]  # [num_joints, 4]
         keypoints_end = self.keypoints[frame_end]      # [num_joints, 4]
         
-        # 线性插值位置和置信度
+        # Linear interpolation of positions and confidences
         positions_start = keypoints_start[:, :3]
         positions_end = keypoints_end[:, :3]
         positions_interp = (1-t) * positions_start + t * positions_end
         
-        # 置信度取最小值（保守策略）
+        # Take minimum confidence (conservative strategy)
         confidences_start = keypoints_start[:, 3]
         confidences_end = keypoints_end[:, 3]
         confidences_interp = np.minimum(confidences_start, confidences_end)
@@ -545,24 +560,24 @@ class VolumetricInterpolator:
                                    output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3,
                                    use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
         """
-        生成插值帧
+        Generate interpolated frames
         
         Args:
-            frame_start: 起始帧索引
-            frame_end: 结束帧索引
-            num_interpolate: 插值帧数
-            max_optimize_frames: 最大优化帧数
-            optimize_weights: 是否优化权重
-            output_dir: 输出目录
-            debug_frames: 调试帧列表
-            smooth_mesh: 是否对网格进行平滑处理
-            subdivide_iter: 细分迭代次数
-            use_vertex_colors: 是否添加顶点颜色
-            save_npy_files: 是否保存npy文件（通常不需要）
-            save_standard_obj: 是否保存标准obj文件（避免重复）
+            frame_start: start frame index
+            frame_end: end frame index
+            num_interpolate: number of interpolation frames
+            max_optimize_frames: maximum number of optimization frames
+            optimize_weights: whether to optimize weights
+            output_dir: output directory
+            debug_frames: debug frames list
+            smooth_mesh: whether to smooth the mesh
+            subdivide_iter: number of subdivision iterations
+            use_vertex_colors: whether to add vertex colors
+            save_npy_files: whether to save npy files (usually not needed)
+            save_standard_obj: whether to save standard obj files (avoid duplicates)
             
         Returns:
-            interpolated_frames: 插值帧列表
+            interpolated_frames: interpolated frames list
         """
         total_start_time = time.time()
         
@@ -699,11 +714,11 @@ class VolumetricInterpolator:
         reference_vertex_colors = None
         if hasattr(reference_mesh, 'triangle_uvs') and len(reference_mesh.triangle_uvs) > 0:
             reference_uvs = np.asarray(reference_mesh.triangle_uvs)
-            print(f"✅ 保留原始纹理坐标: {len(reference_uvs)} 个")
+            print(f"Keep original texture coordinates: {len(reference_uvs)}")
         
         if hasattr(reference_mesh, 'vertex_colors') and len(reference_mesh.vertex_colors) > 0:
             reference_vertex_colors = np.asarray(reference_mesh.vertex_colors)
-            print(f"✅ 保留原始顶点颜色: {len(reference_vertex_colors)} 个")
+            print(f"Keep original vertex colors: {len(reference_vertex_colors)}")
         
         # 改进的归一化策略：计算整体归一化参数
         all_meshes = []
@@ -739,7 +754,7 @@ class VolumetricInterpolator:
         if self.skinning_weights is not None:
             # 确保权重矩阵与顶点数量匹配
             if self.skinning_weights.shape[0] != len(reference_vertices_norm):
-                print(f"⚠️  权重矩阵顶点数 ({self.skinning_weights.shape[0]}) 与参考网格顶点数 ({len(reference_vertices_norm)}) 不匹配")
+                print(f"Weight matrix vertex number ({self.skinning_weights.shape[0]}) does not match reference mesh vertex number ({len(reference_vertices_norm)})")
                 # 调整权重矩阵大小
                 if self.skinning_weights.shape[0] > len(reference_vertices_norm):
                     self.skinning_weights = self.skinning_weights[:len(reference_vertices_norm)]
@@ -758,7 +773,7 @@ class VolumetricInterpolator:
                     self.skinning_weights = extended_weights
             
             # 使用与Skinning.py相同的相对变换处理
-            print(f"    使用相对变换进行LBS...")
+            print(f"Use relative transformation for LBS...")
             
             # 获取参考帧变换（使用起始帧作为参考）
             reference_transforms = self.transforms[frame_start]
@@ -783,7 +798,7 @@ class VolumetricInterpolator:
             )
             
             # 修复坐标系问题：将骨骼变换到网格坐标系
-            print(f"    修复坐标系对齐...")
+            print(f"Fix coordinate system alignment...")
             
             # 计算网格中心
             mesh_center = np.mean(transformed_vertices, axis=0)
@@ -803,10 +818,10 @@ class VolumetricInterpolator:
             # 更新插值后的变换
             interpolated_transforms = adjusted_transforms
             
-            print(f"      - 网格中心: {mesh_center}")
-            print(f"      - 调整前骨骼中心: {joint_center}")
-            print(f"      - 调整后骨骼中心: {np.mean(adjusted_transforms[:, :3, 3], axis=0)}")
-            print(f"      - 偏移量: {offset}")
+            print(f"      - Mesh center: {mesh_center}")
+            print(f"      - Before adjustment skeleton center: {joint_center}")
+            print(f"      - After adjustment skeleton center: {np.mean(adjusted_transforms[:, :3, 3], axis=0)}")
+            print(f"      - Offset: {offset}")
         else:
             # 如果没有权重，使用改进的顶点插值
             mesh_start = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_start]))
@@ -822,7 +837,7 @@ class VolumetricInterpolator:
             vertices_end_norm = self.normalize_mesh_vertices(vertices_end[:min_vertices], global_normalization_params)
             
             # 对齐网格和骨骼
-            print(f"    对齐网格和骨骼（无权重模式）...")
+            print(f"Align mesh and skeleton (no weight mode)...")
             vertices_start_aligned = self.align_mesh_with_skeleton(vertices_start_norm, interpolated_transforms)
             vertices_end_aligned = self.align_mesh_with_skeleton(vertices_end_norm, interpolated_transforms)
             
@@ -841,17 +856,17 @@ class VolumetricInterpolator:
         # 保留原始纹理坐标
         if reference_uvs is not None:
             interpolated_mesh.triangle_uvs = o3d.utility.Vector2dVector(reference_uvs)
-            print(f"✅ 保留原始纹理坐标到插值mesh")
+            print(f"Keep original texture coordinates to interpolated mesh")
         
         # 保留原始顶点颜色
         if reference_vertex_colors is not None:
             interpolated_mesh.vertex_colors = o3d.utility.Vector3dVector(reference_vertex_colors)
-            print(f"✅ 保留原始顶点颜色到插值mesh")
+            print(f"Keep original vertex colors to interpolated mesh")
         
         # 确保有法线
         if not interpolated_mesh.has_vertex_normals():
             interpolated_mesh.compute_vertex_normals()
-            print(f"✅ 计算插值mesh的顶点法线")
+            print(f"Compute vertex normals of interpolated mesh")
         
         # 可选的网格平滑处理
         if smooth_mesh:
@@ -888,7 +903,7 @@ class VolumetricInterpolator:
         return frame_data
     
     def denormalize_mesh_vertices(self, normalized_vertices, normalization_params):
-        """改进的反归一化网格顶点到原始空间"""
+        """Improved denormalization of mesh vertices to original space"""
         params = normalization_params
         trans_offset = np.array([params['x_trans'], 0, params['z_trans']])
         
@@ -1038,27 +1053,27 @@ class VolumetricInterpolator:
                 temp_mesh.vertex_normals = deepcopy(mesh.vertex_normals)
             
             # 执行Loop细分
-            print(f"    执行网格细分 (iterations: {subdivide_iter})...")
-            print(f"    - 细分前: {len(temp_mesh.vertices)} 顶点, {len(temp_mesh.triangles)} 面")
+            print(f"Execute mesh subdivision (iterations: {subdivide_iter})...")
+            print(f"    - Before subdivision: {len(temp_mesh.vertices)} vertices, {len(temp_mesh.triangles)} faces")
             
             temp_mesh = temp_mesh.subdivide_loop(subdivide_iter)
             temp_mesh.compute_vertex_normals()
             
-            print(f"    - 细分后: {len(temp_mesh.vertices)} 顶点, {len(temp_mesh.triangles)} 面")
+            print(f"    - After subdivision: {len(temp_mesh.vertices)} vertices, {len(temp_mesh.triangles)} faces")
             
             return temp_mesh
             
         except Exception as e:
-            print(f"    ⚠️  网格细分失败: {e}")
-            return mesh  # 返回原始网格
+            print(f"Mesh subdivision failed: {e}")
+            return mesh  # Return original mesh
 
 class DualReferenceInterpolator(VolumetricInterpolator):
     """
-    双参考帧插值器
+    Dual reference frame interpolator
     
-    使用起始帧和结束帧作为参考，分别优化蒙皮权重：
-    - 前半段使用起始帧的骨骼和蒙皮
-    - 后半段使用结束帧的骨骼和蒙皮
+    Use start frame and end frame as reference, respectively optimize skinning weights:
+    - First half uses start frame skeleton and skinning
+    - Second half uses end frame skeleton and skinning
     """
     
     def __init__(self, skeleton_data_dir, mesh_folder_path, weights_path=None):
@@ -1070,15 +1085,15 @@ class DualReferenceInterpolator(VolumetricInterpolator):
     
     def optimize_dual_reference_weights(self, frame_start, frame_end, max_optimize_frames=5):
         """
-        为起始帧和结束帧分别优化蒙皮权重
+        Optimize skinning weights for start frame and end frame
         
         Args:
-            frame_start: 起始帧索引
-            frame_end: 结束帧索引
-            max_optimize_frames: 最大优化帧数
+            frame_start: start frame index
+            frame_end: end frame index
+            max_optimize_frames: maximum number of optimization frames
             
         Returns:
-            success: 是否成功
+            success: whether successful
         """
         print(f"Start dual reference frame weight optimization...")
         print(f"  - Start reference frame: {frame_start}")
@@ -1388,16 +1403,16 @@ class DualReferenceInterpolator(VolumetricInterpolator):
                 o3d.io.write_triangle_mesh(str(output_path), output_mesh)
                 
                 # 可视化
-                if hasattr(self, 'visualize_skeleton_with_mesh'):
-                    viz_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}.png"
-                    self.visualize_skeleton_with_mesh(
-                        {
-                            'mesh': output_mesh, 
-                            'transforms': interpolated_transforms,
-                            'keypoints': interpolated_keypoints
-                        },
-                        str(viz_path), frame_idx
-                    )
+                # if hasattr(self, 'visualize_skeleton_with_mesh'):
+                #     viz_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}.png"
+                #     self.visualize_skeleton_with_mesh(
+                #         {
+                #             'mesh': output_mesh, 
+                #             'transforms': interpolated_transforms,
+                #             'keypoints': interpolated_keypoints
+                #         },
+                #         str(viz_path), frame_idx
+                #     )
             
             return {
                 'mesh': output_mesh,
@@ -1779,8 +1794,8 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
             opt_file = os.path.join(exp_dir, 'opt.pickle')
             
             if not os.path.exists(opt_file):
-                print(f"⚠️  Neural Marionette配置文件不存在: {opt_file}")
-                print("   请确保已下载预训练模型")
+                print(f"Neural Marionette configuration file does not exist: {opt_file}")
+                print("Please ensure the pre-trained model has been downloaded")
                 return False
             
             with open(opt_file, 'rb') as f:
@@ -1789,67 +1804,67 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
             # 加载预训练模型
             resume_file = os.path.join(exp_dir, 'aist_pretrained.pth')
             if not os.path.exists(resume_file):
-                print(f"⚠️  Neural Marionette预训练模型不存在: {resume_file}")
-                print("   请确保已下载预训练模型")
+                print(f"Neural Marionette pre-trained model does not exist: {resume_file}")
+                print("Please ensure the pre-trained model has been downloaded")
                 return False
             
             checkpoint = torch.load(resume_file)
             self.network = NeuralMarionette(self.opt).cuda()
             self.network.load_state_dict(checkpoint)
             self.network.eval()
-            self.network.anneal(1)  # 启用affinity提取
+            self.network.anneal(1)  # Enable affinity extraction
             
-            print(f"✅ Neural Marionette网络初始化成功")
+            print(f"Neural Marionette network initialized successfully")
             return True
             
         except Exception as e:
-            print(f"❌ Neural Marionette网络初始化失败: {e}")
+            print(f"Neural Marionette network initialization failed: {e}")
             return False
     
     def _load_voxel_sequence(self, frame_start, frame_end):
-        """加载体素序列 - 优先使用指定的帧数据"""
+        """Load voxel sequence - prioritize using specified frame data"""
         try:
             from utils.dataset_utils import crop_sequence, episodic_normalization, voxelize
             
             # 优先使用指定的网格数据（与用户输入的帧相关）
             if hasattr(self, 'mesh_files') and len(self.mesh_files) > 0:
-                print(f"    使用指定帧的网格数据...")
-                print(f"    - 起始帧: {frame_start}")
-                print(f"    - 结束帧: {frame_end}")
+                print(f"Use specified frame mesh data...")
+                print(f"    - Start frame: {frame_start}")
+                print(f"    - End frame: {frame_end}")
                 return self._load_mesh_voxel_sequence(frame_start, frame_end)
             
             # 如果没有网格数据，使用demo数据作为fallback
             demo_source_file = 'data/demo/source/gHO_sBM_cAll_d20_mHO1_ch05.npy'
             if os.path.exists(demo_source_file):
-                print(f"    使用demo数据作为fallback: {demo_source_file}")
+                print(f"Use demo data as fallback: {demo_source_file}")
                 return self._load_demo_voxel_sequence(demo_source_file, frame_start, frame_end)
             
-            print(f"❌ 没有找到可用的数据源")
+            print(f"No available data source found")
             return None, None
             
         except Exception as e:
-            print(f"❌ 体素序列加载失败: {e}")
+            print(f"Voxel sequence loading failed: {e}")
             return None, None
     
     def _load_mesh_voxel_sequence(self, frame_start, frame_end):
-        """从网格数据加载体素序列 - 使用指定的帧范围"""
+        """Load voxel sequence from mesh data - use specified frame range"""
         try:
             from utils.dataset_utils import episodic_normalization, voxelize
             
             voxel_sequence = []
             points_sequence = []
             
-            print(f"    - 加载帧范围: {frame_start} 到 {frame_end}")
-            print(f"    - 可用网格文件数: {len(self.mesh_files)}")
+            print(f"    - Load frame range: {frame_start} to {frame_end}")
+            print(f"    - Available mesh files: {len(self.mesh_files)}")
             
             for frame_idx in range(frame_start, frame_end + 1):
                 if frame_idx >= len(self.mesh_files):
-                    print(f"    ⚠️  帧 {frame_idx} 超出范围，跳过")
+                    print(f"Frame {frame_idx} out of range, skip")
                     break
                 
-                print(f"    - 加载帧 {frame_idx}: {self.mesh_files[frame_idx]}")
+                print(f"    - Load frame {frame_idx}: {self.mesh_files[frame_idx]}")
                 
-                # 加载网格
+                # Load mesh
                 mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_idx]))
                 vertices = np.asarray(mesh.vertices)
                 
@@ -1863,33 +1878,33 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
                 points_sequence.append(vertices_norm[0])
             
             if len(voxel_sequence) == 0:
-                print(f"    ❌ 没有成功加载任何帧")
+                print(f"No frames successfully loaded")
                 return None, None
             
             # 转换为tensor
             voxel_tensor = torch.from_numpy(np.stack(voxel_sequence, axis=0)).float().cuda()
-            print(f"    - 网格体素化后形状: {voxel_tensor.shape}")
+            print(f"    - Mesh voxelized shape: {voxel_tensor.shape}")
             
             return voxel_tensor, points_sequence
             
         except Exception as e:
-            print(f"❌ 网格体素序列加载失败: {e}")
+            print(f"Mesh voxel sequence loading failed: {e}")
             import traceback
             traceback.print_exc()
             return None, None
     
     def _load_demo_voxel_sequence(self, demo_file, frame_start, frame_end):
-        """加载demo点云数据并转换为体素 - 与源码完全一致"""
+        """Load demo point cloud data and convert to voxel - exactly same as source code"""
         try:
             from utils.dataset_utils import crop_sequence, episodic_normalization, voxelize
             
             # 加载点云数据（与源码完全一致）
             x = np.load(demo_file)[..., :3]  # (T, N, 3)
-            print(f"    - 原始点云数据形状: {x.shape}")
+            print(f"    - Original point cloud data shape: {x.shape}")
             
             # 使用源码的数据处理流程
             x = crop_sequence(x, frame_start, self.opt.Ttot, self.opt.sample_rate)
-            print(f"    - 裁剪后数据形状: {x.shape}")
+            print(f"    - Cropped data shape: {x.shape}")
             
             # 归一化处理（与源码一致）
             x = episodic_normalization(x, scale=1.0, x_trans=0.0, z_trans=0.0)
@@ -1900,25 +1915,25 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
                 try:
                     vox_seq.append(voxelize(x[t], (self.opt.grid_size,) * 3, is_binarized=True))
                 except Exception as e:
-                    print(f"    ⚠️  第{t}帧体素化失败: {e}")
+                    print(f"Voxelization failed for frame {t}: {e}")
                     # 创建空体素
                     empty_voxel = np.zeros((self.opt.grid_size,) * 3)
                     vox_seq.append(empty_voxel)
             
             # 转换为tensor（与源码一致）
             vox_seq = torch.from_numpy(np.stack(vox_seq, axis=0)).float().cuda()
-            print(f"    - 体素化后形状: {vox_seq.shape}")
+            print(f"    - Voxelized shape: {vox_seq.shape}")
             
             return vox_seq, x
             
         except Exception as e:
-            print(f"❌ demo体素序列加载失败: {e}")
+            print(f"Demo voxel sequence loading failed: {e}")
             import traceback
             traceback.print_exc()
             return None, None
     
     def _interpolate_with_neural_marionette(self, voxel_sequence, frame_start, frame_end, num_interpolate):
-        """使用Neural Marionette进行插值"""
+        """Use Neural Marionette for interpolation"""
         try:
             from torch.distributions.normal import Normal
             
@@ -1927,21 +1942,21 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
             
             # 使用源码的参数设置
             sample_num = self.sample_num  # 使用完整采样数量
-            print(f"    - 采样数量: {sample_num}")
+            print(f"    - Sample number: {sample_num}")
             
-            # 设置opt.Ttot（如果未设置）
+            # Set opt.Ttot (if not set)
             if not hasattr(self.opt, 'Ttot'):
                 self.opt.Ttot = 21
             
             with torch.no_grad():
                 # 检测关键点
-                print(f"    - 插值体素形状: {voxel_sequence.shape}")
+                print(f"    - Interpolated voxel shape: {voxel_sequence.shape}")
                 detector_log = self.network.kypt_detector(voxel_sequence[None])
                 keypoints = detector_log['keypoints']
                 affinity = detector_log['affinity']
                 _ = self.network.dyna_module.encode(keypoints, affinity)
                 
-                # 获取网络参数
+                # Get network parameters
                 A = self.network.dyna_module.A
                 priority = self.network.dyna_module.priority
                 parents = self.network.dyna_module.parents
@@ -2048,18 +2063,18 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
             return interp_voxel, selected_keypoints, parents
                 
         except Exception as e:
-            print(f"❌ Neural Marionette插值失败: {e}")
+            print(f"Neural Marionette interpolation failed: {e}")
             import traceback
             traceback.print_exc()
             return None, None, None
     
     def _voxel_to_mesh(self, voxel_sequence):
-        """将体素序列转换为网格序列 - 使用源码的渲染方式"""
+        """Convert voxel sequence to mesh sequence - use source code rendering"""
         try:
             mesh_sequence = []
             
             for t in range(len(voxel_sequence)):
-                # 将体素转换为点云坐标（与源码完全一致）
+                # Convert voxel to point cloud coordinates (exactly same as source code)
                 coords = np.stack(np.where(voxel_sequence[t, 0].clone().detach().cpu().numpy()), axis=-1) / ((64 - 1) / 2) - 1
                 
                 if len(coords) == 0:
@@ -2137,11 +2152,11 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
                 
                 mesh_sequence.append(mesh)
             
-            print(f"    - 生成网格数量: {len(mesh_sequence)}")
+            print(f"    - Number of generated meshes: {len(mesh_sequence)}")
             return mesh_sequence
             
         except Exception as e:
-            print(f"❌ 体素到网格转换失败: {e}")
+            print(f"Voxel to mesh conversion failed: {e}")
             import traceback
             traceback.print_exc()
             return []
@@ -2151,7 +2166,7 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
                                    output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3,
                                    use_vertex_colors=False, save_npy_files=False, save_standard_obj=True):
         """
-        使用Neural Marionette方法生成插值帧
+        Use Neural Marionette method to generate interpolated frames
         """
         total_start_time = time.time()
         
@@ -2180,7 +2195,7 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
         
         # 检查网络是否初始化成功
         if self.network is None:
-            print("❌ Neural Marionette网络未初始化，无法进行插值")
+            print("Neural Marionette network not initialized, cannot perform interpolation")
             return []
         
         # 设置输出目录
@@ -2189,36 +2204,36 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
         
         try:
             # 加载体素序列 - 使用实际帧范围
-            print(f"  加载体素序列...")
+            print(f"Load voxel sequence...")
             voxel_sequence, points_sequence = self._load_voxel_sequence(actual_start, actual_end)
             
             if voxel_sequence is None:
-                print("❌ 体素序列加载失败")
+                print("Voxel sequence loading failed")
                 return []
             
-            print(f"    - 体素序列形状: {voxel_sequence.shape}")
+            print(f"    - Voxel sequence shape: {voxel_sequence.shape}")
             
             # 使用Neural Marionette进行插值 - 使用实际帧范围
-            print(f"  执行Neural Marionette插值...")
+            print(f"Execute Neural Marionette interpolation...")
             interp_voxel, selected_keypoints, parents = self._interpolate_with_neural_marionette(
                 voxel_sequence, actual_start, actual_end, num_interpolate
             )
             
             if interp_voxel is None:
-                print("❌ Neural Marionette插值失败")
+                print("Neural Marionette interpolation failed")
                 return []
             
-            print(f"    - 插值体素形状: {interp_voxel.shape}")
+            print(f"    - Interpolated voxel shape: {interp_voxel.shape}")
             
             # 转换为网格序列
-            print(f"  转换体素到网格...")
+            print(f"Convert voxel to mesh...")
             mesh_sequence = self._voxel_to_mesh(interp_voxel)
             
             if len(mesh_sequence) == 0:
-                print("❌ 网格转换失败")
+                print("Mesh conversion failed")
                 return []
             
-            print(f"    - 生成网格数量: {len(mesh_sequence)}")
+            print(f"    - Number of generated meshes: {len(mesh_sequence)}")
             
             # 生成插值帧数据
             interpolated_frames = []
@@ -2294,14 +2309,14 @@ class NeuralMarionetteInterpolator(VolumetricInterpolator):
             return interpolated_frames
             
         except Exception as e:
-            print(f"❌ Neural Marionette插值生成失败: {e}")
+            print(f"Neural Marionette interpolation generation failed: {e}")
             import traceback
             traceback.print_exc()
             return []
 
 
 def main():
-    """主函数 - 用于测试"""
+    """Main function - for testing"""
     # 配置路径
     skeleton_data_dir = "output/skeleton_prediction"
     mesh_folder_path = "D:/Code/VVEditor/Rafa_Approves_hd_4k"
@@ -2318,10 +2333,10 @@ def main():
     frame_end = 20
     num_interpolate = 5
     
-    print(f"🧪 测试插值功能...")
-    print(f"  - 起始帧: {frame_start}")
-    print(f"  - 结束帧: {frame_end}")
-    print(f"  - 插值帧数: {num_interpolate}")
+    print(f"Test interpolation function...")
+    print(f"  - Start frame: {frame_start}")
+    print(f"  - End frame: {frame_end}")
+    print(f"  - Number of interpolated frames: {num_interpolate}")
     
     # 生成插值帧
     interpolated_frames = interpolator.generate_interpolated_frames(
@@ -2334,9 +2349,9 @@ def main():
     )
     
     if interpolated_frames:
-        print(f"✅ 插值测试成功！生成了 {len(interpolated_frames)} 个插值帧")
+        print(f"Interpolation test successful! Generated {len(interpolated_frames)} interpolated frames")
     else:
-        print(f"❌ 插值测试失败！")
+        print(f"Interpolation test failed!")
 
 if __name__ == "__main__":
     main()

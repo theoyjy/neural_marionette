@@ -16,49 +16,49 @@ from threading import Lock
 class SequenceSkeletonPredictor:
     def __init__(self, checkpoint_path, opt_path):
         """
-        初始化Neural Marionette模型
+        Initialize Neural Marionette model
         
         Args:
-            checkpoint_path: 预训练模型路径
-            opt_path: 配置文件路径
+            checkpoint_path: Pretrained model path
+            opt_path: Configuration file path
         """
         start_time = time.time()
         
-        # 加载配置
+        # Load configuration
         with open(opt_path, 'rb') as f:
             self.opt = pickle.load(f)
         
-        # 加载模型
+        # Load model
         checkpoint = torch.load(checkpoint_path)
         self.network = NeuralMarionette(self.opt).cuda()
         self.network.load_state_dict(checkpoint)
         self.network.eval()
-        self.network.anneal(1)  # 启用affinity提取
+        self.network.anneal(1)  # Enable affinity extraction
         
         model_load_time = time.time() - start_time
-        print(f"✅ 模型加载成功，关键点数量: {self.opt.nkeypoints}")
-        print(f"⏱️  模型加载耗时: {model_load_time:.2f}秒")
+        print(f"Model loaded successfully, keypoint count: {self.opt.nkeypoints}")
+        print(f"Model loading time: {model_load_time:.2f} seconds")
     
     def process_single_mesh(self, mesh_file, frame_idx, total_frames):
         """
-        处理单个网格文件（用于多线程）
+        Process single mesh file (for multi-threading)
         
         Args:
-            mesh_file: 网格文件路径
-            frame_idx: 帧索引
-            total_frames: 总帧数
+            mesh_file: Mesh file path
+            frame_idx: Frame index
+            total_frames: Total frame count
             
         Returns:
-            dict: 包含处理结果的字典
+            dict: Dictionary containing processing results
         """
         try:
-            print(f"🔄 处理第 {frame_idx+1}/{total_frames} 个文件: {os.path.basename(mesh_file)}")
+            print(f"Processing file {frame_idx+1}/{total_frames}: {os.path.basename(mesh_file)}")
             
-            # 加载网格
+            # Load mesh
             if mesh_file.endswith('.obj') or mesh_file.endswith('.ply'):
                 mesh = o3d.io.read_triangle_mesh(mesh_file)
             else:
-                # 尝试作为点云加载
+                # Try to load as point cloud
                 pcd = o3d.io.read_point_cloud(mesh_file)
                 points = np.asarray(pcd.points)
             
@@ -69,16 +69,16 @@ class SequenceSkeletonPredictor:
                 points = np.asarray(pcd.points)
                 mesh_data = pcd
             else:
-                raise ValueError(f"无法加载文件: {mesh_file}")
+                raise ValueError(f"Cannot load file: {mesh_file}")
             
-            # 归一化点云（模仿原代码的处理方式）
+            # Normalize point cloud (mimicking original code processing)
             points_norm = episodic_normalization(points[None], scale=1.0, x_trans=0.0, z_trans=0.0)[0]
             
-            # 体素化
+            # Voxelization
             try:
                 voxel = voxelize(points_norm, (self.opt.grid_size,) * 3, is_binarized=True)
             except Exception as e:
-                print(f"❌ 体素化失败: {e}")
+                print(f"Voxelization failed: {e}")
                 raise
             
             return {
@@ -90,7 +90,7 @@ class SequenceSkeletonPredictor:
             }
             
         except Exception as e:
-            print(f"❌ 处理文件失败 {mesh_file}: {e}")
+            print(f"Failed to process file {mesh_file}: {e}")
             return {
                 'frame_idx': frame_idx,
                 'mesh': None,
@@ -102,16 +102,16 @@ class SequenceSkeletonPredictor:
     
     def load_mesh_sequence(self, mesh_folder, file_pattern="*.obj", max_frames=None):
         """
-        加载网格序列并转换为体素（多线程版本）
+        Load mesh sequence and convert to voxels (multi-threaded version)
         
         Args:
-            mesh_folder: 包含网格文件的文件夹路径
-            file_pattern: 文件匹配模式，如 "*.obj", "frame_*.ply"
-            max_frames: 最大帧数限制
+            mesh_folder: Folder path containing mesh files
+            file_pattern: File matching pattern, such as "*.obj", "frame_*.ply"
+            max_frames: Maximum frame count limit
         
         Returns:
             voxel_sequence: (T, grid_size, grid_size, grid_size)
-            mesh_sequence: 原始网格数据列表
+            mesh_sequence: Original mesh data list
         """
         start_time = time.time()
         
@@ -121,94 +121,94 @@ class SequenceSkeletonPredictor:
             mesh_files = mesh_files[:max_frames]
         
         if len(mesh_files) == 0:
-            raise ValueError(f"在 {mesh_folder} 中未找到匹配 {file_pattern} 的文件")
+            raise ValueError(f"No files matching {file_pattern} found in {mesh_folder}")
         
-        print(f"📁 找到 {len(mesh_files)} 个网格文件")
-        print(f"🔄 开始多线程处理...")
+        print(f"Found {len(mesh_files)} mesh files")
+        print(f"Starting multi-threaded processing...")
         
-        # 多线程处理
-        max_workers = min(8, len(mesh_files))  # 限制最大线程数
-        print(f"  - 使用 {max_workers} 个线程")
+        # Multi-threaded processing
+        max_workers = min(8, len(mesh_files))  # Limit maximum thread count
+        print(f"  - Using {max_workers} threads")
         
         voxel_sequence = []
         mesh_sequence = []
         points_sequence = []
         
-        # 用于存储结果的列表（按帧索引排序）
+        # List to store results (sorted by frame index)
         results = [None] * len(mesh_files)
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 提交所有任务
+            # Submit all tasks
             future_to_idx = {
                 executor.submit(self.process_single_mesh, mesh_file, i, len(mesh_files)): i 
                 for i, mesh_file in enumerate(mesh_files)
             }
             
-            # 收集结果
+            # Collect results
             for future in as_completed(future_to_idx):
                 result = future.result()
                 if result['success']:
                     results[result['frame_idx']] = result
-                    print(f"✅ 完成第 {result['frame_idx']+1}/{len(mesh_files)} 个文件")
+                    print(f"Completed file {result['frame_idx']+1}/{len(mesh_files)}")
                 else:
-                    print(f"❌ 第 {result['frame_idx']+1} 个文件处理失败: {result.get('error', '未知错误')}")
+                    print(f"File {result['frame_idx']+1} processing failed: {result.get('error', 'Unknown error')}")
         
-        # 按顺序整理结果
+        # Sort results in order
         for i, result in enumerate(results):
             if result is None or not result['success']:
-                raise ValueError(f"第 {i+1} 个文件处理失败")
+                raise ValueError(f"File {i+1} processing failed")
             
             mesh_sequence.append(result['mesh'])
             points_sequence.append(result['points_norm'])
             voxel_sequence.append(result['voxel'])
         
-        # 转换为torch tensor
+        # Convert to torch tensor
         voxel_sequence = torch.from_numpy(np.stack(voxel_sequence, axis=0)).float().cuda()
         
         processing_time = time.time() - start_time
-        print(f"✅ 多线程处理完成！")
-        print(f"  - 体素序列形状: {voxel_sequence.shape}")
-        print(f"  - 处理耗时: {processing_time:.2f}秒")
-        print(f"  - 平均每帧: {processing_time/len(mesh_files):.3f}秒")
+        print(f"Multi-threaded processing completed!")
+        print(f"  - Voxel sequence shape: {voxel_sequence.shape}")
+        print(f"  - Processing time: {processing_time:.2f} seconds")
+        print(f"  - Average per frame: {processing_time/len(mesh_files):.3f} seconds")
         
         return voxel_sequence, mesh_sequence, points_sequence
 
     def predict_skeleton_sequence(self, voxel_sequence):
         """
-        预测整个序列的骨骼
+        Predict skeleton for entire sequence
         
         Args:
             voxel_sequence: (T, grid_size, grid_size, grid_size)
         
         Returns:
-            keypoints: (1, T, K, 4) - joints 坐标和置信度
-            transforms: (T, K, 4, 4) - 变换矩阵,每个关节的局部坐标系
-            affinity: 骨骼连接关系
-            parents: 父子关系
+            keypoints: (1, T, K, 4) - joint coordinates and confidence
+            transforms: (T, K, 4, 4) - transformation matrices, local coordinate system for each joint
+            affinity: Skeleton connection relationships
+            parents: Parent-child relationships
         """
         start_time = time.time()
-        print(f"🧠 开始神经网络预测...")
-        print(f"  - 输入形状: {voxel_sequence.shape}")
+        print(f"Start neural network prediction...")
+        print(f"  - Input shape: {voxel_sequence.shape}")
         
         with torch.no_grad():
-            # 一次性处理整个序列
-            detector_log = self.network.kypt_detector(voxel_sequence[None])  # 添加batch维度
+            # Process entire sequence at once
+            detector_log = self.network.kypt_detector(voxel_sequence[None])  # Add batch dimension
             keypoints = detector_log['keypoints']
             affinity = detector_log['affinity']
             
-            # 保持一致的可见性（类似原代码）
+            # Maintain consistent visibility (similar to original code)
             keypoints[:, 1:, :, -1] = keypoints[:, :1, :, -1].expand(-1, voxel_sequence.size(0) - 1, -1)
             
-            # 编码动力学
+            # Encode dynamics
             dyna_log = self.network.dyna_module.encode(keypoints, affinity)
             R = dyna_log['R'][0]  # (T, K, 3, 3)
             
-            # 获取结构信息
+            # Get structural information
             A = self.network.dyna_module.A
             priority = self.network.dyna_module.priority
             parents = self.network.dyna_module.parents
             
-            # 构建4x4变换矩阵
+            # Build 4x4 transformation matrices
             pos = keypoints[0, :, :, :3][..., None]  # (T, K, 3, 1)
             T4x4 = torch.cat([R, pos], dim=-1)  # (T, K, 3, 4)
             homo = torch.tensor([0.0, 0.0, 0.0, 1.0]).to(R.device)[None, None, None].expand(
@@ -216,10 +216,10 @@ class SequenceSkeletonPredictor:
             T4x4 = torch.cat([T4x4, homo], dim=-2)  # (T, K, 4, 4)
             
             prediction_time = time.time() - start_time
-            print(f"✅ 神经网络预测完成！")
-            print(f"  - 预测耗时: {prediction_time:.2f}秒")
-            print(f"  - 关键点形状: {keypoints.shape}")
-            print(f"  - 变换矩阵形状: {T4x4.shape}")
+            print(f"Neural network prediction completed!")
+            print(f"  - Prediction time: {prediction_time:.2f} seconds")
+            print(f"  - Keypoints shape: {keypoints.shape}")
+            print(f"  - Transforms shape: {T4x4.shape}")
             
             return {
                 'keypoints': keypoints,
@@ -234,16 +234,16 @@ class SequenceSkeletonPredictor:
     
     def save_skeleton_results(self, results, output_dir, points_sequence=None):
         """
-        保存骨骼预测结果
+        Save skeleton prediction results
         
         Args:
-            results: predict_skeleton_sequence的输出
-            output_dir: 输出目录
-            points_sequence: 原始点云序列（用于可视化）
+            results: Output of predict_skeleton_sequence
+            output_dir: Output directory
+            points_sequence: Original point cloud sequence (for visualization)
         """
         os.makedirs(output_dir, exist_ok=True)
         
-        # 保存数值结果
+        # Save numerical results
         np.save(os.path.join(output_dir, 'keypoints.npy'), results['keypoints'][0].cpu().numpy())
         np.save(os.path.join(output_dir, 'transforms.npy'), results['transforms'].cpu().numpy())
         np.save(os.path.join(output_dir, 'parents.npy'), results['parents'])
@@ -254,19 +254,19 @@ class SequenceSkeletonPredictor:
         np.save(os.path.join(output_dir, 'rotations.npy'), results['rotations'].cpu().numpy())
 
         # save normalized points
-        if points_sequence is not None:
+        # if points_sequence is not None:
             # np.save(os.path.join(output_dir, 'points_sequence.npy'), np.stack(points_sequence, axis=0))
-            self.visualize_skeleton_sequence(results, output_dir, points_sequence)
+            # self.visualize_skeleton_sequence(results, output_dir, points_sequence)
     
     def visualize_skeleton_sequence(self, results, output_dir, points_sequence, 
                                   vis_threshold=0.2, save_frames=True):
         """
-        可视化骨骼序列
+        Visualize skeleton sequence
         """
         keypoints = results['keypoints'][0].cpu().numpy()  # (T, K, 4)
         parents = results['parents']
         
-        # 生成关节颜色
+        # Generate joint colors
         np.random.seed(42)
         joint_colors = np.random.rand(keypoints.shape[1], 3)
         
@@ -274,15 +274,15 @@ class SequenceSkeletonPredictor:
             frames_dir = os.path.join(output_dir, 'skeleton_frames')
             os.makedirs(frames_dir, exist_ok=True)
         
-        # 创建可视化器
+        # Create visualizer
         vis = o3d.visualization.Visualizer()
         vis.create_window(width=800, height=600, visible=not save_frames)
         
         for t in range(keypoints.shape[0]):
             vis.clear_geometries()
-            print(f'处理帧 {t+1}/{keypoints.shape[0]}')
+            print(f'Processing frame {t+1}/{keypoints.shape[0]}')
 
-            # 添加原始点云
+            # Add original point cloud
             if points_sequence:
                 pcd = o3d.geometry.PointCloud()
                 pcd.points = o3d.utility.Vector3dVector(points_sequence[t])
@@ -290,7 +290,7 @@ class SequenceSkeletonPredictor:
                 vis.add_geometry(pcd)
                 # print(f'min={np.min(points_sequence[t], axis=0)}, max={np.max(points_sequence[t], axis=0)}')
             
-            # 添加关节和骨骼
+            # Add joints and bones
             kypts = keypoints[t, :, :3]
             alphas = keypoints[t, :, -1]
             print(f'joints num = {kypts.shape[0]} min={np.min(kypts, axis=0)}, max={np.max(kypts, axis=0)}')
@@ -300,16 +300,16 @@ class SequenceSkeletonPredictor:
                 if alphas[k] < vis_threshold:
                     continue
                 draw_count += 1
-                # 添加关节球
+                # Add joint sphere
                 sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.03)
                 sphere.translate(kypts[k])
                 sphere.paint_uniform_color(joint_colors[k])
                 vis.add_geometry(sphere)
                 
-                # 添加骨骼连接
+                # Add bone connections
                 parent = parents[k]
                 if parent != k and alphas[parent] >= vis_threshold:
-                    # 创建骨骼线
+                    # Create bone line
                     line_points = [kypts[parent], kypts[k]]
                     lines = [[0, 1]]
                     line_set = o3d.geometry.LineSet()
@@ -318,68 +318,68 @@ class SequenceSkeletonPredictor:
                     line_set.paint_uniform_color([0, 0.8, 0])
                     vis.add_geometry(line_set)
 
-            print(f'绘制关节数量: {draw_count}')
+            print(f'Draw joints: {draw_count}')
             if save_frames:
-                # 保存帧图像
+                # Save frame image
                 img = vis.capture_screen_float_buffer(True)
                 img = (np.asarray(img) * 255).astype(np.uint8)
                 o3d.io.write_image(os.path.join(frames_dir, f'frame_{t:04d}.png'), 
                                  o3d.geometry.Image(img))
             else:
-                # 交互式显示
+                # Interactive display
                 vis.poll_events()
                 vis.update_renderer()
         
         vis.destroy_window()
-        print(f"可视化完成，共处理 {keypoints.shape[0]} 帧")
+        print(f"Visualization completed, processed {keypoints.shape[0]} frames")
 
 def main():
-    """主函数"""
+    """Main function"""
     import argparse
     
-    parser = argparse.ArgumentParser(description="骨骼序列预测")
+    parser = argparse.ArgumentParser(description="Skeleton sequence prediction")        
     parser.add_argument("--mesh_folder", type=str, default="D:/Code/VVEditor/Rafa_Approves_hd_4k", 
-                       help="输入网格文件夹路径")
+                       help="Input mesh folder path")
     parser.add_argument("--output_dir", type=str, default="output/skeleton_prediction", 
-                       help="输出目录")
+                       help="Output directory")
     parser.add_argument("--max_frames", type=int, default=160, 
-                       help="最大处理帧数")
+                       help="Maximum number of frames to process")
     parser.add_argument("--visualization", action="store_true", 
-                       help="启用可视化")
+                       help="Enable visualization")
     
     args = parser.parse_args()
     
-    # 配置路径
+    # Configure paths
     exp_dir = 'pretrained/aist'
     checkpoint_path = os.path.join(exp_dir, 'aist_pretrained.pth')
     opt_path = os.path.join(exp_dir, 'opt.pickle')
     
-    # 输入序列文件夹
+    # Input sequence folder
     mesh_folder = args.mesh_folder
     skel_data_dir = args.output_dir
     visualize_dir = os.path.join(args.output_dir, 'visualization')
 
-    # 创建预测器
+    # Create predictor
     predictor = SequenceSkeletonPredictor(checkpoint_path, opt_path)
     
-    # 加载网格序列
+    # Load mesh sequence
     voxel_sequence, mesh_sequence, points_sequence = predictor.load_mesh_sequence(
         mesh_folder, file_pattern="*.obj", max_frames=args.max_frames
     )
     
-    # 预测骨骼
-    print("开始预测骨骼...")
+    # Predict skeleton
+    print("Start predicting skeleton...")
     results = predictor.predict_skeleton_sequence(voxel_sequence)
-    print("骨骼预测完成!")
+    print("Skeleton prediction completed!")
     
-    # 保存结果
+    # Save results
     predictor.save_skeleton_results(results, skel_data_dir, points_sequence)
 
     if args.visualization:
         from SkelVisualizer import visualize_skeleton
         visualize_skeleton(skel_data_dir, visualize_dir)
 
-    print("处理完成!")
+    print("Processing completed!")
 
 if __name__ == "__main__":
     main()
