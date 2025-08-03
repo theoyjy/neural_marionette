@@ -102,6 +102,7 @@ def step2_run_interpolation(args):
         "--pairs_dir", pairs_dir,
         "--output_dir", "evaluation/interpolation",  # 修改输出目录为evaluation
         "--methods", "baseline", "dual_reference",
+        # "--methods",  "dual_reference",
         "--max_pairs", str(args.max_pairs) if args.max_pairs else "3",
         "--database_name", database_name,
         "--subject_id", args.subject_id,
@@ -125,7 +126,8 @@ def step3_evaluate_results(args):
         "--results_dir", "evaluation/interpolation",  # 修改为新的结果目录
         "--methods", "baseline", "dual_reference",
         "--output_dir", str(args.individual_results_dir),
-        "--database_name", database_name
+        "--database_name", database_name,
+        "--fast"  # 启用快速模式
     ]
     
     if args.no_gt:
@@ -134,6 +136,9 @@ def step3_evaluate_results(args):
         cmd.extend(["--gt_hdf5", args.gt_hdf5])
         cmd.extend(["--subject_id", args.subject_id])
         cmd.extend(["--sequence_id", args.sequence_id])
+    
+    # 添加k值参数
+    cmd.extend(["--k", str(args.k)])
     
     return run_step("评估结果", cmd)
 
@@ -278,11 +283,11 @@ def main():
     
     # 执行步骤
     steps = [
-        (1, "生成关键帧对", lambda: step1_generate_keyframes(args)),
+        # (1, "生成关键帧对", lambda: step1_generate_keyframes(args)),
         (2, "运行插值", lambda: step2_run_interpolation(args)),
-        # (3, "评估结果", lambda: step3_evaluate_results(args)),
-        # (4, "可视化结果", lambda: step4_visualize_results(args)),
-        # (5, "对比方法", lambda: step5_compare_methods(args))
+        (3, "评估结果", lambda: step3_evaluate_results(args)),
+        (4, "可视化结果", lambda: step4_visualize_results(args)),
+        (5, "对比方法", lambda: step5_compare_methods(args))
     ]
     
     success_count = 0

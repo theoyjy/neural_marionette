@@ -696,124 +696,52 @@ class VolumetricInterpolator:
             save_npy_files: 是否保存npy文件（通常不需要）
             save_standard_obj: 是否保存标准obj文件（避免重复）
         """
-        # 加载参考网格（起始帧）
-        reference_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_start]))
-        reference_vertices = np.asarray(reference_mesh.vertices)
-        reference_faces = np.asarray(reference_mesh.triangles) if len(reference_mesh.triangles) > 0 else None
+        return self._generate_frame_core(
+            frame_start, frame_end, t, interpolated_transforms, 
+            output_dir, frame_idx, smooth_mesh, subdivide_iter, 
+            save_npy_files, save_standard_obj,
+            reference_frame=frame_start, skinning_weights=self.skinning_weights
+        )
+    
+    def _generate_frame_core(self, frame_start, frame_end, t, interpolated_transforms, 
+                           output_dir, frame_idx, smooth_mesh=False, subdivide_iter=3, 
+                           save_npy_files=False, save_standard_obj=True,
+                           reference_frame=None, skinning_weights=None):
+        """
+        核心插值帧生成逻辑（可被不同插值方法复用）
         
-        # 保留原始mesh的纹理坐标和顶点颜色
-        reference_uvs = None
-        reference_vertex_colors = None
-        if hasattr(reference_mesh, 'triangle_uvs') and len(reference_mesh.triangle_uvs) > 0:
-            reference_uvs = np.asarray(reference_mesh.triangle_uvs)
-            print(f"Keep original texture coordinates: {len(reference_uvs)}")
+        Args:
+            reference_frame: 参考帧索引，如果为None则使用frame_start
+            skinning_weights: 蒙皮权重矩阵，如果为None则使用self.skinning_weights
+        """
+        if reference_frame is None:
+            reference_frame = frame_start
+            
+        # 准备帧数据
+        frame_data = self._prepare_frame_data(frame_start, frame_end, reference_frame)
+        reference_vertices = frame_data['reference_vertices']
+        reference_faces = frame_data['reference_faces']
+        reference_uvs = frame_data['reference_uvs']
+        reference_vertex_colors = frame_data['reference_vertex_colors']
+        global_normalization_params = frame_data['global_normalization_params']
         
-        if hasattr(reference_mesh, 'vertex_colors') and len(reference_mesh.vertex_colors) > 0:
-            reference_vertex_colors = np.asarray(reference_mesh.vertex_colors)
-            print(f"Keep original vertex colors: {len(reference_vertex_colors)}")
-        
-        # 改进的归一化策略：计算整体归一化参数
-        all_meshes = []
-        all_vertices = []
-        
-        # 收集所有相关帧的网格信息
-        frame_indices = [frame_start, frame_end]
-        for idx in frame_indices:  # 修复：使用idx而不是frame_idx避免变量名冲突
-            mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[idx]))
-            vertices = np.asarray(mesh.vertices)
-            all_meshes.append(mesh)
-            all_vertices.append(vertices)
-        
-        # 计算全局归一化参数
-        all_vertices_flat = np.vstack(all_vertices)
-        global_bmax = np.amax(all_vertices_flat, axis=0)
-        global_bmin = np.amin(all_vertices_flat, axis=0)
-        global_blen = (global_bmax - global_bmin).max()
-        
-        global_normalization_params = {
-            'bmin': global_bmin,
-            'bmax': global_bmax,
-            'blen': global_blen,
-            'scale': 1.0,
-            'x_trans': 0.0,
-            'z_trans': 0.0
-        }
-        
-        # 使用全局参数归一化参考网格
-        reference_vertices_norm = self.normalize_mesh_vertices(reference_vertices, global_normalization_params)
+        # 处理蒙皮权重
+        processed_weights = self._process_skinning_weights(
+            reference_vertices, reference_frame, global_normalization_params, skinning_weights
+        )
         
         # 应用LBS变换生成网格
-        if self.skinning_weights is not None:
-            # 确保权重矩阵与顶点数量匹配
-            if self.skinning_weights.shape[0] != len(reference_vertices_norm):
-                print(f"Weight matrix vertex number ({self.skinning_weights.shape[0]}) does not match reference mesh vertex number ({len(reference_vertices_norm)})")
-                # 调整权重矩阵大小
-                if self.skinning_weights.shape[0] > len(reference_vertices_norm):
-                    self.skinning_weights = self.skinning_weights[:len(reference_vertices_norm)]
-                else:
-                    # 扩展权重矩阵
-                    extended_weights = np.zeros((len(reference_vertices_norm), self.skinning_weights.shape[1]))
-                    extended_weights[:self.skinning_weights.shape[0]] = self.skinning_weights
-                    # 对新增顶点使用距离初始化
-                    keypoints = self.keypoints[frame_start, :, :3]
-                    remaining_vertices = reference_vertices_norm[self.skinning_weights.shape[0]:]
-                    if len(remaining_vertices) > 0:
-                        distances = cdist(remaining_vertices, keypoints)
-                        remaining_weights = np.exp(-distances**2 / (2 * 0.1**2))
-                        remaining_weights = remaining_weights / (np.sum(remaining_weights, axis=1, keepdims=True) + 1e-8)
-                        extended_weights[self.skinning_weights.shape[0]:] = remaining_weights
-                    self.skinning_weights = extended_weights
-            
-            # 使用与Skinning.py相同的相对变换处理
-            print(f"Use relative transformation for LBS...")
-            
-            # 获取参考帧变换（使用起始帧作为参考）
-            reference_transforms = self.transforms[frame_start]
-            
-            # 计算从参考帧到插值帧的相对变换
-            relative_transforms = np.zeros_like(interpolated_transforms)
-            for j in range(self.num_joints):
-                if np.linalg.det(reference_transforms[j][:3, :3]) > 1e-6:
-                    ref_inv = np.linalg.inv(reference_transforms[j])
-                    relative_transforms[j] = interpolated_transforms[j] @ ref_inv
-                else:
-                    relative_transforms[j] = np.eye(4)
-            
-            # 应用LBS变换（使用相对变换）
-            transformed_vertices_norm = self.apply_lbs_transform(
-                reference_vertices_norm, self.skinning_weights, relative_transforms
+        if processed_weights is not None:
+            # 应用LBS变形
+            transformed_vertices = self._apply_lbs_deformation(
+                reference_vertices, processed_weights, interpolated_transforms, 
+                reference_frame, global_normalization_params
             )
             
-            # 使用全局参数反归一化
-            transformed_vertices = self.denormalize_mesh_vertices(
-                transformed_vertices_norm, global_normalization_params
+            # 应用坐标系对齐
+            transformed_vertices, interpolated_transforms = self._apply_coordinate_alignment(
+                transformed_vertices, interpolated_transforms
             )
-            
-            # 修复坐标系问题：将骨骼变换到网格坐标系
-            print(f"Fix coordinate system alignment...")
-            
-            # 计算网格中心
-            mesh_center = np.mean(transformed_vertices, axis=0)
-            
-            # 计算骨骼中心（使用插值后的绝对变换）
-            joint_positions = interpolated_transforms[:, :3, 3]
-            joint_center = np.mean(joint_positions, axis=0)
-            
-            # 计算偏移量
-            offset = mesh_center - joint_center
-            
-            # 调整骨骼位置到网格坐标系
-            adjusted_transforms = interpolated_transforms.copy()
-            for j in range(self.num_joints):
-                adjusted_transforms[j][:3, 3] += offset
-            
-            # 更新插值后的变换
-            interpolated_transforms = adjusted_transforms
-            
-            print(f"      - Mesh center: {mesh_center}")
-            print(f"      - Before adjustment skeleton center: {joint_center}")
-            print(f"      - After adjustment skeleton center: {np.mean(adjusted_transforms[:, :3, 3], axis=0)}")
-            print(f"      - Offset: {offset}")
         else:
             # 如果没有权重，使用改进的顶点插值
             mesh_start = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_start]))
@@ -839,36 +767,17 @@ class VolumetricInterpolator:
             # 反归一化
             transformed_vertices = self.denormalize_mesh_vertices(interpolated_vertices_norm, global_normalization_params)
         
-        # 创建插值网格
-        interpolated_mesh = o3d.geometry.TriangleMesh()
-        interpolated_mesh.vertices = o3d.utility.Vector3dVector(transformed_vertices)
-        if reference_faces is not None:
-            interpolated_mesh.triangles = o3d.utility.Vector3iVector(reference_faces)
-        
-        # 保留原始纹理坐标
-        if reference_uvs is not None:
-            interpolated_mesh.triangle_uvs = o3d.utility.Vector2dVector(reference_uvs)
-            print(f"Keep original texture coordinates to interpolated mesh")
-        
-        # 保留原始顶点颜色
-        if reference_vertex_colors is not None:
-            interpolated_mesh.vertex_colors = o3d.utility.Vector3dVector(reference_vertex_colors)
-            print(f"Keep original vertex colors to interpolated mesh")
-        
-        # 确保有法线
-        if not interpolated_mesh.has_vertex_normals():
-            interpolated_mesh.compute_vertex_normals()
-            print(f"Compute vertex normals of interpolated mesh")
-        
-        # 可选的网格平滑处理
-        if smooth_mesh:
-            interpolated_mesh = self.smooth_mesh(interpolated_mesh, subdivide_iter)
+        # 创建输出网格
+        interpolated_mesh = self._create_output_mesh(
+            transformed_vertices, reference_faces, reference_uvs, reference_vertex_colors,
+            smooth_mesh, subdivide_iter
+        )
         
         # 插值关键点
         interpolated_keypoints = self.interpolate_keypoints(frame_start, frame_end, t)
         
         # 保存插值帧数据
-        frame_data = {
+        frame_result = {
             'frame_idx': frame_idx,
             'interpolation_t': t,
             'mesh': interpolated_mesh,
@@ -892,7 +801,7 @@ class VolumetricInterpolator:
                 keypoints_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}_keypoints.npy"
                 np.save(keypoints_output_path, interpolated_keypoints)
         
-        return frame_data
+        return frame_result
     
     def denormalize_mesh_vertices(self, normalized_vertices, normalization_params):
         """Improved denormalization of mesh vertices to original space"""
@@ -1059,6 +968,239 @@ class VolumetricInterpolator:
             print(f"Mesh subdivision failed: {e}")
             return mesh  # Return original mesh
 
+    def _prepare_frame_data(self, frame_start, frame_end, reference_frame=None):
+        """
+        准备插值帧数据（全局归一化参数、参考网格等）
+        
+        Args:
+            frame_start: 起始帧索引
+            frame_end: 结束帧索引  
+            reference_frame: 参考帧索引，如果为None则使用frame_start
+            
+        Returns:
+            字典包含：reference_mesh, reference_vertices, reference_faces, 
+                   reference_uvs, reference_vertex_colors, global_normalization_params
+        """
+        if reference_frame is None:
+            reference_frame = frame_start
+            
+        # 加载参考网格
+        reference_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[reference_frame]))
+        reference_vertices = np.asarray(reference_mesh.vertices)
+        reference_faces = np.asarray(reference_mesh.triangles) if len(reference_mesh.triangles) > 0 else None
+        
+        # 保留原始mesh的纹理坐标和顶点颜色
+        reference_uvs = None
+        reference_vertex_colors = None
+        if hasattr(reference_mesh, 'triangle_uvs') and len(reference_mesh.triangle_uvs) > 0:
+            reference_uvs = np.asarray(reference_mesh.triangle_uvs)
+            print(f"Keep original texture coordinates: {len(reference_uvs)}")
+        
+        if hasattr(reference_mesh, 'vertex_colors') and len(reference_mesh.vertex_colors) > 0:
+            reference_vertex_colors = np.asarray(reference_mesh.vertex_colors)
+            print(f"Keep original vertex colors: {len(reference_vertex_colors)}")
+        
+        # 计算全局归一化参数
+        all_meshes = []
+        all_vertices = []
+        
+        frame_indices = [frame_start, frame_end]
+        for idx in frame_indices:
+            mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[idx]))
+            vertices = np.asarray(mesh.vertices)
+            all_meshes.append(mesh)
+            all_vertices.append(vertices)
+        
+        all_vertices_flat = np.vstack(all_vertices)
+        global_bmax = np.amax(all_vertices_flat, axis=0)
+        global_bmin = np.amin(all_vertices_flat, axis=0)
+        global_blen = (global_bmax - global_bmin).max()
+        
+        global_normalization_params = {
+            'bmin': global_bmin,
+            'bmax': global_bmax,
+            'blen': global_blen,
+            'scale': 1.0,
+            'x_trans': 0.0,
+            'z_trans': 0.0
+        }
+        
+        return {
+            'reference_mesh': reference_mesh,
+            'reference_vertices': reference_vertices,
+            'reference_faces': reference_faces,
+            'reference_uvs': reference_uvs,
+            'reference_vertex_colors': reference_vertex_colors,
+            'global_normalization_params': global_normalization_params
+        }
+    
+    def _process_skinning_weights(self, reference_vertices, frame_start, global_normalization_params, skinning_weights=None):
+        """
+        处理蒙皮权重（权重矩阵大小匹配、扩展等）
+        
+        Args:
+            reference_vertices: 参考网格顶点
+            frame_start: 起始帧索引
+            global_normalization_params: 全局归一化参数
+            skinning_weights: 蒙皮权重矩阵，如果为None则使用self.skinning_weights
+            
+        Returns:
+            处理后的权重矩阵
+        """
+        if skinning_weights is None:
+            skinning_weights = self.skinning_weights
+            
+        if skinning_weights is None:
+            return None
+            
+        reference_vertices_norm = self.normalize_mesh_vertices(reference_vertices, global_normalization_params)
+        
+        # 确保权重矩阵与顶点数量匹配
+        if skinning_weights.shape[0] != len(reference_vertices_norm):
+            print(f"Weight matrix vertex number ({skinning_weights.shape[0]}) does not match reference mesh vertex number ({len(reference_vertices_norm)})")
+            # 调整权重矩阵大小
+            if skinning_weights.shape[0] > len(reference_vertices_norm):
+                skinning_weights = skinning_weights[:len(reference_vertices_norm)]
+            else:
+                # 扩展权重矩阵
+                extended_weights = np.zeros((len(reference_vertices_norm), skinning_weights.shape[1]))
+                extended_weights[:skinning_weights.shape[0]] = skinning_weights
+                # 对新增顶点使用距离初始化
+                keypoints = self.keypoints[frame_start, :, :3]
+                remaining_vertices = reference_vertices_norm[skinning_weights.shape[0]:]
+                if len(remaining_vertices) > 0:
+                    from scipy.spatial.distance import cdist
+                    distances = cdist(remaining_vertices, keypoints)
+                    remaining_weights = np.exp(-distances**2 / (2 * 0.1**2))
+                    remaining_weights = remaining_weights / (np.sum(remaining_weights, axis=1, keepdims=True) + 1e-8)
+                    extended_weights[skinning_weights.shape[0]:] = remaining_weights
+                skinning_weights = extended_weights
+                
+        return skinning_weights
+    
+    def _apply_lbs_deformation(self, reference_vertices, skinning_weights, interpolated_transforms, reference_frame, global_normalization_params):
+        """
+        应用LBS变形
+        
+        Args:
+            reference_vertices: 参考网格顶点
+            skinning_weights: 蒙皮权重矩阵
+            interpolated_transforms: 插值后的变换矩阵
+            reference_frame: 参考帧索引
+            global_normalization_params: 全局归一化参数
+            
+        Returns:
+            变形后的顶点坐标
+        """
+        # 使用全局参数归一化参考网格
+        reference_vertices_norm = self.normalize_mesh_vertices(reference_vertices, global_normalization_params)
+        
+        # 使用与Skinning.py相同的相对变换处理
+        print(f"Use relative transformation for LBS...")
+        
+        # 获取参考帧变换
+        reference_transforms = self.transforms[reference_frame]
+        
+        # 计算从参考帧到插值帧的相对变换
+        relative_transforms = np.zeros_like(interpolated_transforms)
+        for j in range(self.num_joints):
+            if np.linalg.det(reference_transforms[j][:3, :3]) > 1e-6:
+                ref_inv = np.linalg.inv(reference_transforms[j])
+                relative_transforms[j] = interpolated_transforms[j] @ ref_inv
+            else:
+                relative_transforms[j] = np.eye(4)
+        
+        # 应用LBS变换（使用相对变换）
+        transformed_vertices_norm = self.apply_lbs_transform(
+            reference_vertices_norm, skinning_weights, relative_transforms
+        )
+        
+        # 使用全局参数反归一化
+        transformed_vertices = self.denormalize_mesh_vertices(
+            transformed_vertices_norm, global_normalization_params
+        )
+        
+        return transformed_vertices
+    
+    def _apply_coordinate_alignment(self, transformed_vertices, interpolated_transforms):
+        """
+        应用坐标系对齐
+        
+        Args:
+            transformed_vertices: 变形后的顶点
+            interpolated_transforms: 插值后的变换矩阵
+            
+        Returns:
+            对齐后的顶点坐标和调整后的变换矩阵
+        """
+        # 修复坐标系问题：将骨骼变换到网格坐标系
+        print(f"Fix coordinate system alignment...")
+        
+        # 计算网格中心
+        mesh_center = np.mean(transformed_vertices, axis=0)
+        
+        # 计算骨骼中心（使用插值后的绝对变换）
+        joint_positions = interpolated_transforms[:, :3, 3]
+        joint_center = np.mean(joint_positions, axis=0)
+        
+        # 计算偏移量
+        offset = mesh_center - joint_center
+        
+        # 调整骨骼位置到网格坐标系
+        adjusted_transforms = interpolated_transforms.copy()
+        for j in range(self.num_joints):
+            adjusted_transforms[j][:3, 3] += offset
+        
+        print(f"      - Mesh center: {mesh_center}")
+        print(f"      - Before adjustment skeleton center: {joint_center}")
+        print(f"      - After adjustment skeleton center: {np.mean(adjusted_transforms[:, :3, 3], axis=0)}")
+        print(f"      - Offset: {offset}")
+        
+        return transformed_vertices, adjusted_transforms
+    
+    def _create_output_mesh(self, transformed_vertices, reference_faces, reference_uvs, reference_vertex_colors, smooth_mesh=False, subdivide_iter=3):
+        """
+        创建输出网格
+        
+        Args:
+            transformed_vertices: 变形后的顶点
+            reference_faces: 参考面片
+            reference_uvs: 参考UV坐标
+            reference_vertex_colors: 参考顶点颜色
+            smooth_mesh: 是否平滑网格
+            subdivide_iter: 细分迭代次数
+            
+        Returns:
+            输出网格
+        """
+        # 创建插值网格
+        interpolated_mesh = o3d.geometry.TriangleMesh()
+        interpolated_mesh.vertices = o3d.utility.Vector3dVector(transformed_vertices)
+        if reference_faces is not None:
+            interpolated_mesh.triangles = o3d.utility.Vector3iVector(reference_faces)
+        
+        # 保留原始纹理坐标
+        if reference_uvs is not None:
+            interpolated_mesh.triangle_uvs = o3d.utility.Vector2dVector(reference_uvs)
+            print(f"Keep original texture coordinates to interpolated mesh")
+        
+        # 保留原始顶点颜色
+        if reference_vertex_colors is not None:
+            interpolated_mesh.vertex_colors = o3d.utility.Vector3dVector(reference_vertex_colors)
+            print(f"Keep original vertex colors to interpolated mesh")
+        
+        # 确保有法线
+        if not interpolated_mesh.has_vertex_normals():
+            interpolated_mesh.compute_vertex_normals()
+            print(f"Compute vertex normals of interpolated mesh")
+        
+        # 可选的网格平滑处理
+        if smooth_mesh:
+            interpolated_mesh = self.smooth_mesh(interpolated_mesh, subdivide_iter)
+        
+        return interpolated_mesh
+
+
 class DualReferenceInterpolator(VolumetricInterpolator):
     """
     Dual reference frame interpolator
@@ -1208,6 +1350,140 @@ class DualReferenceInterpolator(VolumetricInterpolator):
             print(f"{frame_type} frame weight optimization failed: {e}")
             return None
     
+    def _get_smoothed_reference_weights(self, t, actual_start, actual_end):
+        """
+        获取平滑过渡的权重和参考帧 - 总是进行权重混合以确保平滑性
+        
+        Args:
+            t: 插值参数 [0, 1]
+            actual_start: 实际起始帧索引
+            actual_end: 实际结束帧索引
+            
+        Returns:
+            tuple: (reference_frame, reference_weights, transition_type)
+        """
+        # 使用平滑权重插值系数，避免线性插值的突兀
+        # 使用余弦函数创建S曲线，使过渡更平滑
+        smooth_t = 0.5 * (1 - np.cos(np.pi * t))  # S型曲线插值
+        
+        # 关键修复：总是使用起始帧作为参考帧，避免参考帧跳跃导致骨骼变换不连续
+        # 这是jerk值爆炸的真正原因！
+        reference_frame = actual_start  # 固定使用起始帧，消除硬切换
+        
+        print(f"    Smooth weight blending: t={t:.3f}, smooth_t={smooth_t:.3f}, reference_frame={reference_frame}")
+        
+        try:
+            # 总是进行权重混合，使用平滑插值系数
+            reference_weights = self._blend_weights_safe(
+                self.start_frame_weights, 
+                self.end_frame_weights, 
+                smooth_t,  # 使用平滑插值系数
+                actual_start,  # 主要参考帧（用于确定网格结构）
+                actual_end     # 次要参考帧
+            )
+            transition_type = "always_blended"
+            print(f"    ✅ Always blended weights with smooth coefficient: {reference_weights.shape}")
+            
+        except Exception as e:
+            # 如果权重混合失败，退回到简单策略
+            print(f"    ⚠️ Weight blending failed ({e}), using fallback strategy")
+            if t < 0.5:
+                reference_frame = actual_start
+                reference_weights = self.start_frame_weights
+                print(f"    Using start frame {actual_start} as fallback")
+            else:
+                reference_frame = actual_end
+                reference_weights = self.end_frame_weights
+                print(f"    Using end frame {actual_end} as fallback")
+            transition_type = "fallback"
+        
+        return reference_frame, reference_weights, transition_type
+    
+    def _blend_weights_safe(self, primary_weights, secondary_weights, alpha, primary_frame, secondary_frame):
+        """
+        安全地混合两个权重矩阵，处理顶点数量不一致问题
+        
+        Args:
+            primary_weights: 主要权重矩阵 [V1, J]
+            secondary_weights: 次要权重矩阵 [V2, J]  
+            alpha: 混合系数 [0, 1]，0=完全使用primary，1=完全使用secondary
+            primary_frame: 主要参考帧索引
+            secondary_frame: 次要参考帧索引
+            
+        Returns:
+            blended_weights: 混合后的权重矩阵 [V1, J]
+        """
+        if primary_weights is None or secondary_weights is None:
+            raise ValueError("One of the weight matrices is None")
+        
+        # 获取主要参考帧的网格信息（决定目标顶点数）
+        primary_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[primary_frame]))
+        primary_vertices = np.asarray(primary_mesh.vertices)
+        target_vertex_count = len(primary_vertices)
+        
+        print(f"    Blending weights: target_vertices={target_vertex_count}, alpha={alpha:.3f}")
+        print(f"    Primary weights shape: {primary_weights.shape}")
+        print(f"    Secondary weights shape: {secondary_weights.shape}")
+        
+        # 确保primary_weights与目标顶点数匹配
+        if primary_weights.shape[0] != target_vertex_count:
+            print(f"    Adjusting primary weights: {primary_weights.shape[0]} -> {target_vertex_count}")
+            if primary_weights.shape[0] > target_vertex_count:
+                primary_weights = primary_weights[:target_vertex_count]
+            else:
+                # 扩展权重矩阵
+                extended_primary = np.zeros((target_vertex_count, primary_weights.shape[1]))
+                extended_primary[:primary_weights.shape[0]] = primary_weights
+                # 对新增顶点使用距离初始化
+                if primary_weights.shape[0] < target_vertex_count:
+                    remaining_vertices = primary_vertices[primary_weights.shape[0]:]
+                    if len(remaining_vertices) > 0:
+                        keypoints = self.keypoints[primary_frame, :, :3]
+                        from scipy.spatial.distance import cdist
+                        distances = cdist(remaining_vertices, keypoints)
+                        remaining_weights = np.exp(-distances**2 / (2 * 0.1**2))
+                        remaining_weights = remaining_weights / (np.sum(remaining_weights, axis=1, keepdims=True) + 1e-8)
+                        extended_primary[primary_weights.shape[0]:] = remaining_weights
+                primary_weights = extended_primary
+        
+        # 调整secondary_weights到相同的顶点数
+        if secondary_weights.shape[0] != target_vertex_count:
+            print(f"    Adjusting secondary weights: {secondary_weights.shape[0]} -> {target_vertex_count}")
+            
+            if secondary_weights.shape[0] > target_vertex_count:
+                # 截断多余的顶点
+                adjusted_secondary = secondary_weights[:target_vertex_count]
+            else:
+                # 扩展权重矩阵
+                adjusted_secondary = np.zeros((target_vertex_count, secondary_weights.shape[1]))
+                adjusted_secondary[:secondary_weights.shape[0]] = secondary_weights
+                
+                # 对新增顶点使用距离初始化权重
+                if secondary_weights.shape[0] < target_vertex_count:
+                    remaining_vertices = primary_vertices[secondary_weights.shape[0]:]
+                    if len(remaining_vertices) > 0:
+                        # 使用主要参考帧的关键点
+                        keypoints = self.keypoints[primary_frame, :, :3]
+                        from scipy.spatial.distance import cdist
+                        distances = cdist(remaining_vertices, keypoints)
+                        remaining_weights = np.exp(-distances**2 / (2 * 0.1**2))
+                        remaining_weights = remaining_weights / (np.sum(remaining_weights, axis=1, keepdims=True) + 1e-8)
+                        adjusted_secondary[secondary_weights.shape[0]:] = remaining_weights
+        else:
+            adjusted_secondary = secondary_weights
+        
+        # 执行权重插值
+        blended_weights = (1 - alpha) * primary_weights + alpha * adjusted_secondary
+        
+        # 确保权重和为1（归一化）
+        weight_sums = np.sum(blended_weights, axis=1, keepdims=True)
+        weight_sums[weight_sums < 1e-8] = 1e-8  # 避免除零
+        blended_weights = blended_weights / weight_sums
+        
+        print(f"    ✅ Blended weights shape: {blended_weights.shape}")
+        
+        return blended_weights
+    
     def generate_interpolated_frames(self, frame_start, frame_end, num_interpolate, 
                                    max_optimize_frames=5, optimize_weights=True, 
                                    output_dir=None, debug_frames=None, smooth_mesh=False, subdivide_iter=3,
@@ -1290,19 +1566,13 @@ class DualReferenceInterpolator(VolumetricInterpolator):
             print(f"  Generate interpolation frame {i+1}/{len(t_values)} (t={t:.3f})...")
             
             try:
-                # 根据t值选择使用哪个参考帧
-                if t <= 0.5:
-                    # 前半段使用起始帧
-                    reference_frame = actual_start
-                    reference_weights = self.start_frame_weights
-                    reference_skinner = self.start_frame_skinner
-                    print(f"    Use start frame {actual_start} as reference (t={t:.3f} <= 0.5)")
-                else:
-                    # 后半段使用结束帧
-                    reference_frame = actual_end
-                    reference_weights = self.end_frame_weights
-                    reference_skinner = self.end_frame_skinner
-                    print(f"    Use end frame {actual_end} as reference (t={t:.3f} > 0.5)")
+                # 使用平滑过渡权重选择，避免硬切换
+                reference_frame, reference_weights, transition_type = self._get_smoothed_reference_weights(
+                    t, actual_start, actual_end
+                )
+                
+                # 选择对应的skinner（只是为了兼容性，实际在_generate_dual_reference_frame中不会用到）
+                reference_skinner = self.start_frame_skinner if reference_frame == actual_start else self.end_frame_skinner
                 
                 # 插值骨骼变换 - 使用对应参考帧的pose
                 interpolated_transforms = self.interpolate_skeleton_transforms_with_reference(
@@ -1341,72 +1611,32 @@ class DualReferenceInterpolator(VolumetricInterpolator):
     def _generate_dual_reference_frame(self, frame_start, frame_end, t, interpolated_transforms, 
                                      reference_frame, reference_weights, reference_skinner,
                                      output_dir, frame_idx, smooth_mesh=False, subdivide_iter=3):
-        """生成双参考帧插值帧"""
+        """生成双参考帧插值帧 - 完全复用baseline逻辑"""
         try:
-            # 直接加载原始参考网格，而不是使用skinner中的归一化网格
-            reference_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[reference_frame]))
-            reference_vertices = np.asarray(reference_mesh.vertices)
-            reference_faces = np.asarray(reference_mesh.triangles) if len(reference_mesh.triangles) > 0 else None
+            print(f"    Generating dual reference frame using reference frame {reference_frame}")
             
-            print(f"    Loaded reference mesh: {len(reference_vertices)} vertices, {len(reference_faces) if reference_faces is not None else 0} faces")
-            
-            # 关键修复：计算从参考帧到插值帧的相对变换
-            reference_transforms = self.transforms[reference_frame]
-            relative_transforms = np.zeros_like(interpolated_transforms)
-            
-            for j in range(self.num_joints):
-                if np.linalg.det(reference_transforms[j][:3, :3]) > 1e-6:
-                    ref_inv = np.linalg.inv(reference_transforms[j])
-                    relative_transforms[j] = interpolated_transforms[j] @ ref_inv
-                else:
-                    relative_transforms[j] = np.eye(4)
-            
-            print(f"    Using relative transforms from reference frame {reference_frame}")
-            
-            # 使用参考帧的权重进行LBS变换（使用相对变换）
-            deformed_vertices = reference_skinner.apply_lbs_transform(
-                reference_vertices, reference_weights, relative_transforms
+            # 使用核心插值逻辑，但指定不同的参考帧和权重
+            frame_result = self._generate_frame_core(
+                frame_start, frame_end, t, interpolated_transforms,
+                output_dir, frame_idx, smooth_mesh, subdivide_iter,
+                save_npy_files=False, save_standard_obj=True,
+                reference_frame=reference_frame, skinning_weights=reference_weights
             )
             
-            # 创建输出网格
-            output_mesh = o3d.geometry.TriangleMesh()
-            output_mesh.vertices = o3d.utility.Vector3dVector(deformed_vertices)
-            if reference_faces is not None:
-                output_mesh.triangles = o3d.utility.Vector3iVector(reference_faces)
-            
-            # 可选的网格平滑处理
-            if smooth_mesh:
-                output_mesh = self.smooth_mesh(output_mesh, subdivide_iter)
-            
-            print(f"    Generated output mesh: {len(deformed_vertices)} vertices")
-            
-            # 生成插值关键点数据
-            interpolated_keypoints = self.interpolate_keypoints(frame_start, frame_end, t)
-            
-            # 保存结果
-            if output_dir:
-                output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}.obj"
-                o3d.io.write_triangle_mesh(str(output_path), output_mesh)
+            if frame_result:
+                print(f"    Generated output mesh: {len(frame_result['vertices'])} vertices")
                 
-                # 可视化
-                # if hasattr(self, 'visualize_skeleton_with_mesh'):
-                #     viz_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}.png"
-                #     self.visualize_skeleton_with_mesh(
-                #         {
-                #             'mesh': output_mesh, 
-                #             'transforms': interpolated_transforms,
-                #             'keypoints': interpolated_keypoints
-                #         },
-                #         str(viz_path), frame_idx
-                #     )
-            
-            return {
-                'mesh': output_mesh,
-                'transforms': interpolated_transforms,
-                'keypoints': interpolated_keypoints,
-                't': t,
-                'reference_frame': reference_frame
-            }
+                # 返回与原始格式兼容的结果
+                return {
+                    'mesh': frame_result['mesh'],
+                    'transforms': frame_result['transforms'],
+                    'keypoints': frame_result['keypoints'],
+                    't': t,
+                    'reference_frame': reference_frame
+                }
+            else:
+                print(f"    Generate dual reference frame failed: _generate_frame_core returned None")
+                return None
             
         except Exception as e:
             print(f"    Generate dual reference frame failed: {e}")

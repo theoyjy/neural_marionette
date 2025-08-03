@@ -277,6 +277,30 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
                 mesh_folder_path=str(folder_path),
                 weights_path=output_paths['skinning']
             )
+        elif method == "bbw_enhanced":
+            try:
+                from bbw_enhanced_interpolator import BBWEnhancedInterpolator
+                interpolator = BBWEnhancedInterpolator(
+                    skeleton_data_dir=str(output_paths['skeleton']),
+                    mesh_folder_path=str(folder_path),
+                    weights_path=output_paths['skinning'],
+                    use_bbw=True,
+                    bbw_reference_frame=start_frame,  # Use start frame as reference
+                    use_multi_frame=False,  # DISABLE multi-frame to avoid paper effect
+                    num_key_frames=5,  # Keep for future use
+                    frame_selection_method="pose_diversity"  # Keep for future use
+                )
+                print(f"  - BBW Enhanced: Single-frame mode (anti-paper effect)")
+                print(f"  - BBW Enhanced: Using enhanced sparse weights")
+            except ImportError as e:
+                print(f"  - BBW Enhanced not available: {e}")
+                print(f"  - Falling back to baseline method")
+                from Interpolate import VolumetricInterpolator
+                interpolator = VolumetricInterpolator(
+                    skeleton_data_dir=str(output_paths['skeleton']),
+                    mesh_folder_path=str(folder_path),
+                    weights_path=output_paths['skinning']
+                )
         else:
             raise ValueError(f"Unsupported interpolation method: {method}")
         
@@ -294,6 +318,26 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
         
         # generate interpolated frames
         generation_start = time.time()
+        
+        # BBW-specific initialization
+        if method == "bbw_enhanced" and hasattr(interpolator, 'initialize_skinning'):
+            print(f"  - Initializing BBW skinning system...")
+            bbw_start = time.time()
+            # Pass frame range for multi-frame BBW learning
+            success = interpolator.initialize_skinning(start_frame=start_frame, end_frame=end_frame)
+            bbw_time = time.time() - bbw_start
+            if success:
+                print(f"  - BBW skinning initialized in {bbw_time:.2f}s")
+                # Get BBW info for logging
+                if hasattr(interpolator, 'get_bbw_info'):
+                    bbw_info = interpolator.get_bbw_info()
+                    if bbw_info.get('multi_frame_mode'):
+                        print(f"  - Multi-frame BBW: {len(bbw_info.get('key_frames', []))} key frames used")
+                        print(f"  - Key frames: {bbw_info.get('key_frames')}")
+                # Save BBW weights for future use
+                interpolator.save_bbw_weights(str(output_paths['base']))
+            else:
+                print(f"  - BBW skinning initialization failed")
         
         # 调用插值方法 - start_frame和end_frame已经是排序后文件列表的索引
         interpolated_frames = interpolator.generate_interpolated_frames(
@@ -343,8 +387,8 @@ def main():
     parser.add_argument("start_frame", type=int, help="Start Frame Index (index in sorted file list, starting from 0)")
     parser.add_argument("end_frame", type=int, help="End Frame Index (index in sorted file list, starting from 0)")
     parser.add_argument("--num_interpolate", type=int, default=10, help="Number of Interpolated Frames (Default: 10)")
-    parser.add_argument("--method", choices=["baseline", "dual_reference", "adaptive_similarity", "neural_marionette"], 
-                       default="baseline", help="Interpolation Method (Default: baseline)")
+    parser.add_argument("--method", choices=["baseline", "dual_reference", "adaptive_similarity", "neural_marionette", "bbw_enhanced"], 
+                       default="bbw_enhanced", help="Interpolation Method (Default: bbw_enhanced)") 
     parser.add_argument("--skip-skinning", action="store_true", help="Skip skinning weights optimization")
     parser.add_argument("--result_path", help="Results Info Saved Once Interpolation Finished")
     parser.add_argument("--evaluation-mode", action="store_true", help="Enable evaluation mode with unified output directory")

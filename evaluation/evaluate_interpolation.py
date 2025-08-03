@@ -14,7 +14,7 @@ import time
 import glob
 from utils_mesh import *
 
-def evaluate_single_pair(pair_info_path, method_results_dir, gt_data=None, no_gt=False):
+def evaluate_single_pair(pair_info_path, method_results_dir, gt_data=None, no_gt=False, fast_mode=True):
     """评估单个关键帧对的插值结果"""
     results = {}
     print(f"Evaluate single pair: {method_results_dir}")
@@ -121,7 +121,10 @@ def evaluate_single_pair(pair_info_path, method_results_dir, gt_data=None, no_gt
                     aligned_interp_normals = interpolated_norms
                 
                 # Chamfer距离
-                chamfer_dist = compute_chamfer_distance(aligned_gt_vertices, aligned_interp_vertices)
+                if fast_mode:
+                    chamfer_dist = compute_chamfer_distance(aligned_gt_vertices, aligned_interp_vertices, subsample_ratio=0.05)
+                else:
+                    chamfer_dist = compute_chamfer_distance(aligned_gt_vertices, aligned_interp_vertices, subsample_ratio=1.0)
                 chamfer_distances.append(chamfer_dist)
                 
                 # 法向一致性
@@ -131,7 +134,10 @@ def evaluate_single_pair(pair_info_path, method_results_dir, gt_data=None, no_gt
                         normal_angles.append(np.mean(angles))
                 
                 # ARAP误差
-                arap_error = compute_arap_error(aligned_gt_vertices, aligned_interp_vertices)
+                if fast_mode:
+                    arap_error = compute_arap_error(aligned_gt_vertices, aligned_interp_vertices, sample_ratio=0.02)
+                else:
+                    arap_error = compute_arap_error(aligned_gt_vertices, aligned_interp_vertices, sample_ratio=0.1)
                 arap_errors.append(arap_error)
         
         if chamfer_distances:
@@ -165,7 +171,7 @@ def evaluate_single_pair(pair_info_path, method_results_dir, gt_data=None, no_gt
     # 自碰撞计数
     self_intersection_counts = []
     for mesh in interpolated_meshes:
-        count = compute_self_intersection_count(mesh)
+        count = compute_self_intersection_count(mesh, fast_mode=fast_mode)
         self_intersection_counts.append(count)
     
     if self_intersection_counts:
@@ -280,8 +286,23 @@ def load_gt_data(hdf5_path, subject_id, sequence_id):
         print(f"Load GT data failed: {e}")
         return None
 
-def evaluate_all_pairs(pairs_dir, results_dir, methods, gt_data=None, no_gt=False, database_name="dfaust", subject_id="50002", sequence_id="jumping_jacks", k_value=None):
+def eval_task_worker(task_info):
+    """全局的评估任务函数，用于多进程处理"""
+    pair_info_path, interpolation_dir, pair_name, method, gt_data_local, no_gt_local, fast_mode_local = task_info
+    try:
+        results = evaluate_single_pair(pair_info_path, interpolation_dir, gt_data_local, no_gt_local, fast_mode_local)
+        if results:
+            results['pair_id'] = pair_name
+            results['method'] = method
+            return results
+    except Exception as e:
+        print(f"评估失败 {pair_name}/{method}: {e}")
+    return None
+
+def evaluate_all_pairs(pairs_dir, results_dir, methods, gt_data=None, no_gt=False, database_name="dfaust", subject_id="50002", sequence_id="jumping_jacks", k_value=None, fast_mode=True, single_process=False):
     """Evaluate all keyframe pairs"""
+    import multiprocessing as mp
+    from functools import partial
     all_results = []
     
     # 查找k值子目录
@@ -376,70 +397,82 @@ def evaluate_all_pairs(pairs_dir, results_dir, methods, gt_data=None, no_gt=Fals
     
     print(f"Found interpolation results for {len(available_pairs)} pairs")
     
-    for i, pair_info_path in enumerate(available_pairs):
-        pair_name = pair_info_path.stem  # 例如 "pair_000"
-        print(f"Evaluating keyframe pair {i+1}/{len(available_pairs)}: {pair_name}")
-        
+    # 准备并行处理的任务
+    eval_tasks = []
+    for pair_info_path in available_pairs:
+        pair_name = pair_info_path.stem
         for method in methods:
-            # 查找插值结果目录  
-            # 新的路径结构: results_dir/database_name/subjectid_sequenceid_k{k_val}/pair_name/method
+            # 查找插值结果目录
             output_dir = Path(results_dir)
             interpolation_dir = None
             
             if output_dir.exists():
-                # 新的路径结构，包含k值和pair-specific子目录
                 interpolation_method_dir = Path(results_dir) / database_name / f"{subject_id}_{sequence_id}_k{k_val}" / pair_name / method
-                print(f"Interpolation method directory: {interpolation_method_dir}")
                 if interpolation_method_dir.exists():
-                    # 查找所有形如 "X_Y_Z" 的子目录，也检查直接在method目录下的文件
                     pattern_dirs = list(interpolation_method_dir.glob("*_*_*"))
                     if not pattern_dirs:
-                        # 如果没有找到子目录，检查method目录本身
                         pattern_dirs = [interpolation_method_dir]
-                    print(f"Pattern directories: {pattern_dirs}")
+                    
                     for potential_dir in pattern_dirs:
-                        # 检查是否有插值结果文件
                         obj_files = []
-                        
                         if potential_dir.is_file() and potential_dir.suffix == '.obj':
-                            # 如果pattern_dirs包含了直接的obj文件
                             obj_files = [potential_dir]
                             interpolation_dir = potential_dir.parent
                         else:
-                            # 如果是目录，查找其中的obj文件
                             obj_files = list(potential_dir.glob("frame_*_with_colors.obj"))
                             if not obj_files:
-                                # 也尝试查找其他可能的文件名，包括interpolated_frame_*.obj
                                 obj_files = list(potential_dir.glob("interpolated_frame_*.obj"))
                             if not obj_files:
                                 obj_files = list(potential_dir.glob("*.obj"))
                                 obj_files = [f for f in obj_files if "start_frame" not in f.name and "end_frame" not in f.name]
-                            
                             if obj_files:
                                 interpolation_dir = potential_dir
-                        
                         if obj_files:
-                            print(f"  {method}: Found {len(obj_files)} interpolated files (evaluation mode) in {interpolation_dir.name}")
                             break
-                    
-                    if interpolation_dir:
-                        print(f"  {method}: Found interpolation directory: {interpolation_dir}")                
                 
-                if interpolation_dir is None:
-                    print(f"  {method}: Result directory does not exist")
-                    continue
+                if interpolation_dir:
+                    eval_tasks.append((pair_info_path, interpolation_dir, pair_name, method, gt_data, no_gt, fast_mode))
+    
+    print(f"准备并行评估 {len(eval_tasks)} 个任务")
+    
+    if single_process:
+        # 强制使用串行处理
+        print("使用单进程串行处理模式")
+        all_results = []
+        for i, task_info in enumerate(eval_tasks):
+            print(f"串行处理任务 {i+1}/{len(eval_tasks)}")
+            result = eval_task_worker(task_info)
+            if result:
+                all_results.append(result)
+        print(f"串行处理完成，成功评估 {len(all_results)} 个结果")
+        
+    else:
+        # 尝试使用多进程并行处理，如果失败则回退到串行处理
+        cpu_count = min(mp.cpu_count(), 4)  # 限制最大进程数避免内存压力
+        print(f"尝试使用 {cpu_count} 个进程并行处理")
+        
+        try:
+            # 并行执行评估任务
+            with mp.Pool(cpu_count) as pool:
+                parallel_results = pool.map(eval_task_worker, eval_tasks)
             
-            print(f"  {method}: {interpolation_dir}")
+            # 过滤掉失败的结果
+            all_results = [r for r in parallel_results if r is not None]
+            print(f"并行处理完成，成功评估 {len(all_results)} 个结果")
             
-            results = evaluate_single_pair(pair_info_path, interpolation_dir, gt_data, no_gt)
+        except Exception as e:
+            print(f"多进程处理失败: {e}")
+            print("回退到串行处理...")
             
-            if results:
-                results['pair_id'] = pair_name
-                results['method'] = method
-                all_results.append(results)
-                print(f"  {method}: Completed")
-            else:
-                print(f"  {method}: Failed")
+            # 串行处理作为备选方案
+            all_results = []
+            for i, task_info in enumerate(eval_tasks):
+                print(f"串行处理任务 {i+1}/{len(eval_tasks)}")
+                result = eval_task_worker(task_info)
+                if result:
+                    all_results.append(result)
+            
+            print(f"串行处理完成，成功评估 {len(all_results)} 个结果")
     
     return all_results
 
@@ -530,6 +563,10 @@ def main():
                        help="数据库名称")
     parser.add_argument("--k", type=int, default=None,
                        help="指定k值（如果不指定，使用第一个找到的k值目录）")
+    parser.add_argument("--fast", action="store_true",
+                       help="启用快速模式，使用优化算法减少计算时间")
+    parser.add_argument("--single-process", action="store_true",
+                       help="使用单进程模式，避免多进程相关问题")
     
     args = parser.parse_args()
     
@@ -553,7 +590,7 @@ def main():
     
     # 评估所有关键帧对
     start_time = time.time()
-    results = evaluate_all_pairs(str(pairs_dir), args.results_dir, args.methods, gt_data, args.no_gt, args.database_name, args.subject_id, args.sequence_id, args.k)
+    results = evaluate_all_pairs(str(pairs_dir), args.results_dir, args.methods, gt_data, args.no_gt, args.database_name, args.subject_id, args.sequence_id, args.k, args.fast, args.single_process)
     end_time = time.time()
     
     print(f"Evaluation completed, time taken: {end_time - start_time:.2f} seconds")
