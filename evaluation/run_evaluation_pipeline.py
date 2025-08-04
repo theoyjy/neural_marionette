@@ -139,7 +139,7 @@ def step3_evaluate_results(args):
     # 添加k值参数
     cmd.extend(["--k", str(args.k)])
     
-    return run_step("Evaluate results", cmd)
+    return run_step("Evaluate results", cmd, 3000)
 
 def step4_visualize_results(args):
     """步骤4: 可视化结果"""
@@ -282,8 +282,8 @@ def main():
     
     # 执行步骤
     steps = [
-        (1, "Generate keyframe pairs", lambda: step1_generate_keyframes(args)),
-        (2, "Run interpolation", lambda: step2_run_interpolation(args)),
+        # (1, "Generate keyframe pairs", lambda: step1_generate_keyframes(args)),
+        # (2, "Run interpolation", lambda: step2_run_interpolation(args)),
         (3, "Evaluate results", lambda: step3_evaluate_results(args)),
         (4, "Visualize results", lambda: step4_visualize_results(args)),
         (5, "Compare methods", lambda: step5_compare_methods(args))

@@ -295,13 +295,14 @@ class VertexColorProcessor:
             print(f"Save mesh exception: {e}")
             return None
 
-def integrate_vertex_color_processing(interpolator, mesh_folder_path: str, evaluation_mode: bool = False):
+def integrate_vertex_color_processing(interpolator, mesh_folder_path: str, evaluation_mode: bool = False, method: str = "baseline"):
     """
     Integrate vertex color processing into interpolator
     
     New design: Process vertex colors directly during interpolation
     Args:
         evaluation_mode: If True, skip color processing but keep enhanced file saving
+        method: The interpolation method being used.
     """
     mode_str = "evaluation mode (skip color processing)" if evaluation_mode else "full color processing"
     print(f"Integrate vertex color processing into interpolator ({mode_str})...")
@@ -367,10 +368,14 @@ def integrate_vertex_color_processing(interpolator, mesh_folder_path: str, evalu
                     frame_idx = frame_data.get('frame_idx', i)
                     t = frame_data.get('interpolation_t', i / len(interpolated_frames))
                     
-                    # Interpolate vertex colors from reference frames
-                    interpolated_colors = _interpolate_vertex_colors_from_references(
-                        start_mesh, end_mesh, t
-                    )
+                    # For baseline method, just use the start frame's colors.
+                    # For other methods, interpolate between start and end.
+                    if method == 'baseline':
+                        interpolated_colors = np.asarray(start_mesh.vertex_colors)
+                    else:
+                        interpolated_colors = _interpolate_vertex_colors_from_references(
+                            start_mesh, end_mesh, t
+                        )
                     
                     if interpolated_colors is not None:
                         # Apply interpolated vertex colors

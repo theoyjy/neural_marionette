@@ -635,7 +635,7 @@ class VolumetricInterpolator:
         
         # 如果是反向插值，反转t值
         if is_reverse:
-            t_values = 1.0 - t_values
+            # t_values = 1.0 - t_values
             print(f"  - Reverse interpolation detected: {frame_start} -> {frame_end}")
             print(f"  - Using actual frame range: {actual_start} -> {actual_end}")
         

@@ -271,7 +271,7 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
         print(f"Evaluation Mode: {evaluation_mode}")
         if vertex_color_processor is not None and not evaluation_mode:
             print(f"Integrating vertex color processing into the interpolator...")
-            integrate_vertex_color_processing(interpolator, str(folder_path))
+            integrate_vertex_color_processing(interpolator, str(folder_path), method=method)
         
         # Let's make some new frames!
         generation_start = time.time()
@@ -320,8 +320,8 @@ def generate_skinning_weights_path(start_frame, end_frame, step=1):
 def main():
     parser = argparse.ArgumentParser(description="A pipeline for volumetric video interpolation.")
     parser.add_argument("folder_path", help="Path to the folder with the mesh sequence.")
-    parser.add_argument("start_frame", type=int, help="Index of the start frame (1-based).")
-    parser.add_argument("end_frame", type=int, help="Index of the end frame (1-based).")
+    parser.add_argument("start_frame", type=int, help="Index of the start frame (starts at 0).")
+    parser.add_argument("end_frame", type=int, help="Index of the end frame (starts at 0).")
     parser.add_argument("--num_interpolate", type=int, default=10, help="How many frames to create in between (default: 10).")
     parser.add_argument("--method", choices=["baseline", "dual_reference"], 
                        default="baseline", help="Which interpolation method to use (default: baseline).") 
@@ -351,11 +351,6 @@ def main():
     if args.evaluation_mode and not args.evaluation_output_dir:
         print("Error: When in evaluation mode, you have to tell me where to put the output with --evaluation-output-dir.")
         return
-
-    # Adjust frame indices to be 0-based. This is a common source of confusion.
-    # The user provides 1-based frame numbers, but the code uses 0-based indices.
-    start_frame_0_based = args.start_frame - 1 if args.start_frame > 0 else 0
-    end_frame_0_based = args.end_frame - 1 if args.end_frame > 0 else -1
     
     # Set up all our output paths.
     output_paths = setup_paths(
@@ -385,8 +380,8 @@ def main():
     
     if not step2_interpolation(
         args.folder_path, 
-        start_frame_0_based, 
-        end_frame_0_based, 
+        args.start_frame, 
+        args.end_frame, 
         args.num_interpolate, 
         output_paths, 
         args.evaluation_mode,
