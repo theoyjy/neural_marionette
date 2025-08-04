@@ -2,7 +2,6 @@ import json
 import numpy as np
 import trimesh
 import os
-import sys
 from pathlib import Path
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment, minimize
@@ -15,11 +14,11 @@ from scipy.sparse import csr_matrix
 class AutoSkinning:
     def __init__(self, skeleton_data_dir, reference_frame_idx=0):
         """
-        Initialize reverse mesh unifier
+        初始化反向网格统一器
         
         Args:
-            skeleton_data_dir: Directory path containing skeleton data npy files
-            reference_frame_idx: Reference frame index (used as unification target)
+            skeleton_data_dir: 包含骨骼数据npy文件的文件夹路径
+            reference_frame_idx: 参考帧索引（用作统一的目标）
         """
         self.skeleton_data_dir = Path(skeleton_data_dir)
         self.reference_frame_idx = reference_frame_idx
@@ -30,84 +29,84 @@ class AutoSkinning:
         self.reference_mesh = None
         self.canonicalization_maps = {}
         
-        # Normalization parameters for each frame, for handling independent normalization of each mesh
+        # 每帧的归一化参数，用于处理每个mesh独立归一化的情况
         self.frame_normalization_params = {}
         
-        # LBS related attributes
-        self.skinning_weights = None  # [V, J] Vertex to joint weight matrix
-        self.rest_pose_vertices = None  # Rest pose vertex coordinates
-        self.rest_pose_transforms = None  # Rest pose transformation matrices
+        # LBS相关属性
+        self.skinning_weights = None  # [V, J] 顶点到关节的权重矩阵
+        self.rest_pose_vertices = None  # 静息姿态顶点坐标
+        self.rest_pose_transforms = None  # 静息姿态变换矩阵
         
     def load_skeleton_data(self):
-        """Load Skeleton Data in Numpy Format"""
+        """加载numpy格式的骨骼数据"""
         try:
-            # Load Keypoints Data [num_frames, num_joints, 4] (x, y, z, confidence)
+            # 加载关键点数据 [num_frames, num_joints, 4] (x, y, z, confidence)
             self.keypoints = np.load(self.skeleton_data_dir / 'keypoints.npy')
             
-            # Load Transforms Matrix [num_frames, num_joints, 4, 4]
+            # 加载变换矩阵 [num_frames, num_joints, 4, 4]
             self.transforms = np.load(self.skeleton_data_dir / 'transforms.npy')
             
-            # Load Parent Node Relationship [num_joints]
+            # 加载父节点关系 [num_joints]
             self.parents = np.load(self.skeleton_data_dir / 'parents.npy')
             
             self.num_frames, self.num_joints = self.keypoints.shape[0], self.keypoints.shape[1]
             
-            print(f"Successfully Loaded Skeleton Data:")
-            print(f"  - Number of Frames: {self.num_frames}")
-            print(f"  - Number of Joints: {self.num_joints}")
-            print(f"  - Keypoints Shape: {self.keypoints.shape} (includes confidence)")
-            print(f"  - Transforms Matrix Shape: {self.transforms.shape}")
-            print(f"  - Parent Node Relationship Shape: {self.parents.shape}")
+            print(f"成功加载骨骼数据:")
+            print(f"  - 帧数: {self.num_frames}")
+            print(f"  - 关节数: {self.num_joints}")
+            print(f"  - 关键点形状: {self.keypoints.shape} (包含置信度)")
+            print(f"  - 变换矩阵形状: {self.transforms.shape}")
+            print(f"  - 父节点关系形状: {self.parents.shape}")
             
         except Exception as e:
-            raise ValueError(f"Failed to Load Skeleton Data: {e}")
+            raise ValueError(f"无法加载骨骼数据: {e}")
             
-        # Try to Load Other Optional Data
+        # 尝试加载其他可选数据
         try:
             if (self.skeleton_data_dir / 'affinity.npy').exists():
                 self.affinity = np.load(self.skeleton_data_dir / 'affinity.npy')
-                print(f"  - Affinity Matrix Shape: {self.affinity.shape}")
+                print(f"  - 亲和度矩阵形状: {self.affinity.shape}")
             else:
                 self.affinity = None
                 
             if (self.skeleton_data_dir / 'priority.npy').exists():
                 self.priority = np.load(self.skeleton_data_dir / 'priority.npy')
-                print(f"  - Priority Shape: {self.priority.shape}")
+                print(f"  - 优先级形状: {self.priority.shape}")
             else:
                 self.priority = None
                 
             if (self.skeleton_data_dir / 'A.npy').exists():
                 self.A = np.load(self.skeleton_data_dir / 'A.npy')
-                print(f"  - A Matrix Shape: {self.A.shape}")
+                print(f"  - A矩阵形状: {self.A.shape}")
             else:
                 self.A = None
                 
             if (self.skeleton_data_dir / 'rotations.npy').exists():
                 self.rotations = np.load(self.skeleton_data_dir / 'rotations.npy')
-                print(f"  - Rotation Matrix Shape: {self.rotations.shape}")
+                print(f"  - 旋转矩阵形状: {self.rotations.shape}")
             else:
                 self.rotations = None
         except Exception as e:
-            print(f"Warning: Failed to Load Optional Data: {e}")
+            print(f"警告: 无法加载可选数据: {e}")
 
     def compute_mesh_normalization_params(self, mesh):
         """
-        Compute normalization parameters for a single mesh (simulating episodic_normalization process)
+        计算单个mesh的归一化参数（模拟episodic_normalization的过程）
         
         Args:
-            mesh: Open3D mesh object
+            mesh: Open3D mesh对象
             
         Returns:
-            normalization_params: Dictionary of normalization parameters
+            normalization_params: 归一化参数字典
         """
         vertices = np.asarray(mesh.vertices)
         
-        # Compute bounding box (same logic as episodic_normalization)
+        # 计算边界框（与episodic_normalization相同的逻辑）
         bmax = np.amax(vertices, axis=0)
         bmin = np.amin(vertices, axis=0)
         blen = (bmax - bmin).max()
         
-        # Default normalization parameters (consistent with episodic_normalization defaults)
+        # 默认的归一化参数（与episodic_normalization默认值一致）
         scale = 1.0
         x_trans = 0.0
         z_trans = 0.0
@@ -125,80 +124,75 @@ class AutoSkinning:
     
     def normalize_mesh_vertices(self, vertices, normalization_params):
         """
-        Normalize mesh vertices using given normalization parameters
+        使用给定的归一化参数将mesh顶点归一化
         
         Args:
-            vertices: Original vertex coordinates
-            normalization_params: Normalization parameters
+            vertices: 原始顶点坐标
+            normalization_params: 归一化参数
             
         Returns:
-            normalized_vertices: Normalized vertex coordinates
+            normalized_vertices: 归一化后的顶点坐标
         """
         params = normalization_params
         
-        # Apply the same transformation as episodic_normalization
-        # Formula: ((seq - bmin) * scale / (blen + 1e-5)) * 2 - 1 + [x_trans, 0, z_trans]
+        # 应用与episodic_normalization相同的变换
+        # 公式: ((seq - bmin) * scale / (blen + 1e-5)) * 2 - 1 + [x_trans, 0, z_trans]
         trans_offset = np.array([params['x_trans'], 0, params['z_trans']])
         normalized = ((vertices - params['bmin']) * params['scale'] / (params['blen'] + 1e-5)) * 2 - 1 + trans_offset
         
         return normalized
 
-    def load_reference_vertices(self, reference_frame_idx):
-        """
-        Load reference vertices
-        """
-        self.reference_frame_idx = reference_frame_idx
-        self.reference_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[self.reference_frame_idx]))
-        print(f"Number of Reference Vertices: {len(self.reference_mesh.vertices)}")
-        
-        # pre-compute reference mesh normalization params
-        self.frame_normalization_params[self.reference_frame_idx] = self.compute_mesh_normalization_params(self.reference_mesh)
-
-
     def load_mesh_sequence(self, mesh_folder_path):
         """
-        Prepare mesh sequence
+        加载网格序列
+        
+        Args:
+            mesh_folder_path: 包含obj文件的文件夹路径
         """
         self.mesh_folder_path = Path(mesh_folder_path)
         self.mesh_files = sorted(list(self.mesh_folder_path.glob("*.obj")))
         
         if len(self.mesh_files) != self.num_frames:
-            print(f"Warning: ({len(self.mesh_files)}) and ({self.num_frames}) do not match")
+            print(f"警告: 网格文件数量 ({len(self.mesh_files)}) 与骨骼帧数 ({self.num_frames}) 不匹配")
+        
+        # 加载参考网格
+        self.reference_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[self.reference_frame_idx]))
+        print(f"参考网格顶点数: {len(self.reference_mesh.vertices)}")
+        
+        # 预计算参考网格的归一化参数
+        self.frame_normalization_params[self.reference_frame_idx] = self.compute_mesh_normalization_params(self.reference_mesh)
 
-        self.load_reference_vertices(self.reference_frame_idx)
-        
-        
     def apply_lbs_transform(self, rest_vertices, weights, transforms):
         """
-        Apply Linear Blend Skinning transformation
+        应用Linear Blend Skinning变换
         
         Args:
-            rest_vertices: Rest pose vertices [V, 3]
-            weights: Skinning weights [V, J]
-            transforms: Joint transformation matrices [J, 4, 4]
+            rest_vertices: 静息姿态顶点 [V, 3]
+            weights: skinning权重 [V, J]
+            transforms: 关节变换矩阵 [J, 4, 4]
             
         Returns:
-            transformed_vertices: Transformed vertices [V, 3]
+            transformed_vertices: 变换后的顶点 [V, 3]
         """
         num_vertices = rest_vertices.shape[0]
         num_joints = transforms.shape[0]
         
-        # Convert vertices to homogeneous coordinates
+        # 将顶点转换为齐次坐标
         rest_vertices_homo = np.hstack([rest_vertices, np.ones((num_vertices, 1))])  # [V, 4]
         
-        # Initialize output vertices
+        # 初始化输出顶点
         transformed_vertices = np.zeros((num_vertices, 3))
         
-        # Apply transformation and blend for each joint
+        # 对每个关节应用变换并混合
         for j in range(num_joints):
-            # Get current joint transformation matrix [4, 4]
+            # 获取当前关节的变换矩阵 [4, 4]
             joint_transform = transforms[j]
             
-            # Transform all vertices
+            # 变换所有顶点
             transformed_homo = (joint_transform @ rest_vertices_homo.T).T  # [V, 4]
             transformed_xyz = transformed_homo[:, :3]  # [V, 3]
             
-            # Blend according to weights
+            # 根据权重混合
             joint_weights = weights[:, j:j+1]  # [V, 1]
             transformed_vertices += joint_weights * transformed_xyz
         
@@ -207,38 +201,38 @@ class AutoSkinning:
     def compute_lbs_loss(self, weights_flat, rest_vertices, target_vertices, transforms, 
                         regularization_lambda=0.01):
         """
-        Compute LBS loss function
+        计算LBS损失函数
         
         Args:
-            weights_flat: Flattened weight vector [V*J]
-            rest_vertices: Rest pose vertices [V, 3]
-            target_vertices: Target vertices [V, 3]
-            transforms: Joint transformation matrices [J, 4, 4]
-            regularization_lambda: Regularization coefficient
+            weights_flat: 展平的权重向量 [V*J]
+            rest_vertices: 静息姿态顶点 [V, 3]
+            target_vertices: 目标顶点 [V, 3]
+            transforms: 关节变换矩阵 [J, 4, 4]
+            regularization_lambda: 正则化系数
             
         Returns:
-            loss: Scalar loss value
+            loss: 标量损失值
         """
         num_vertices = rest_vertices.shape[0]
         num_joints = transforms.shape[0]
         
-        # Reshape weight matrix
+        # 重塑权重矩阵
         weights = weights_flat.reshape(num_vertices, num_joints)
         
-        # Ensure weights are non-negative and normalized
+        # 确保权重非负且归一化
         weights = np.maximum(weights, 0)
         weights = weights / (np.sum(weights, axis=1, keepdims=True) + 1e-8)
         
-        # Apply LBS transformation
+        # 应用LBS变换
         predicted_vertices = self.apply_lbs_transform(rest_vertices, weights, transforms)
         
-        # Compute reconstruction loss
+        # 计算重建损失
         reconstruction_loss = np.mean(np.sum((predicted_vertices - target_vertices)**2, axis=1))
         
-        # Add sparsity regularization (encourage each vertex to be influenced by few joints)
+        # 添加稀疏性正则化（鼓励每个顶点只受少数关节影响）
         sparsity_loss = np.mean(np.sum(weights**2, axis=1))
         
-        # Add smoothness regularization (optional, requires mesh connectivity information)
+        # 添加平滑性正则化（可选，需要网格连接信息）
         smoothness_loss = 0.0
         
         total_loss = reconstruction_loss + regularization_lambda * sparsity_loss + smoothness_loss
@@ -248,52 +242,52 @@ class AutoSkinning:
     def optimize_skinning_weights_for_frame(self, target_frame_idx, max_iter=1000, 
                                           init_method='distance_based', regularization_lambda=0.01):
         """
-        Optimize skinning weights for specific frame
+        为特定帧优化skinning权重
         
         Args:
-            target_frame_idx: Target frame index
-            max_iter: Maximum number of iterations
-            init_method: Initialization method ('distance_based', 'uniform', 'random')
+            target_frame_idx: 目标帧索引
+            max_iter: 最大迭代次数
+            init_method: 初始化方法 ('distance_based', 'uniform', 'random')
             
         Returns:
-            optimized_weights: Optimized weight matrix [V, J]
-            loss_history: Loss history
+            optimized_weights: 优化后的权重矩阵 [V, J]
+            loss_history: 损失历史
         """
-        # Get data
-        rest_vertices = self.rest_pose_vertices  # Use reference frame as rest pose
+        # 获取数据
+        rest_vertices = self.rest_pose_vertices  # 使用reference frame作为rest pose
         target_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[target_frame_idx]))
         target_vertices = np.asarray(target_mesh.vertices)
         
-        # Normalization processing (keep same space as keypoints)
+        # 归一化处理（保持与keypoints相同的空间）
         if target_frame_idx not in self.frame_normalization_params:
             self.frame_normalization_params[target_frame_idx] = self.compute_mesh_normalization_params(target_mesh)
         
         target_vertices_norm = self.normalize_mesh_vertices(target_vertices, self.frame_normalization_params[target_frame_idx])
         rest_vertices_norm = self.normalize_mesh_vertices(rest_vertices, self.frame_normalization_params[self.reference_frame_idx])
         
-        # Ensure rest and target vertex counts match
-        original_rest_vertices = len(rest_vertices_norm)  # Save original rest vertex count
+        # 确保rest和target顶点数量匹配
+        original_rest_vertices = len(rest_vertices_norm)  # 保存原始rest顶点数
         if len(rest_vertices_norm) != len(target_vertices_norm):
-            print(f"Warning: rest vertex count ({len(rest_vertices_norm)}) does not match target vertex count ({len(target_vertices_norm)})")
-            # Use smaller count for optimization
+            print(f"警告: rest顶点数 ({len(rest_vertices_norm)}) 与target顶点数 ({len(target_vertices_norm)}) 不匹配")
+            # 使用较小的数量进行优化
             min_vertices = min(len(rest_vertices_norm), len(target_vertices_norm))
             rest_vertices_norm_used = rest_vertices_norm[:min_vertices]
             target_vertices_norm_used = target_vertices_norm[:min_vertices]
-            print(f"Adjusted to use first {min_vertices} vertices for optimization")
+            print(f"调整为使用前 {min_vertices} 个顶点进行优化")
         else:
             rest_vertices_norm_used = rest_vertices_norm
             target_vertices_norm_used = target_vertices_norm
         
         num_vertices = len(rest_vertices_norm_used)
         
-        # Get transformation matrices
+        # 获取变换矩阵
         target_transforms = self.transforms[target_frame_idx]  # [J, 4, 4]
         rest_transforms = self.transforms[self.reference_frame_idx]  # [J, 4, 4]
         
-        # Compute relative transformation (from rest pose to target pose)
+        # 计算相对变换（从rest pose到target pose）
         relative_transforms = np.zeros_like(target_transforms)
         for j in range(self.num_joints):
-            if np.linalg.det(rest_transforms[j][:3, :3]) > 1e-6:  # Check if invertible
+            if np.linalg.det(rest_transforms[j][:3, :3]) > 1e-6:  # 检查是否可逆
                 rest_inv = np.linalg.inv(rest_transforms[j])
                 relative_transforms[j] = target_transforms[j] @ rest_inv
             else:
@@ -301,88 +295,87 @@ class AutoSkinning:
         
         num_joints = self.num_joints
         
-        # Initialize weights
+        # 初始化权重
         if init_method == 'distance_based':
-            # Distance-based initialization
+            # 基于距离的初始化
             keypoints = self.keypoints[self.reference_frame_idx, :, :3]
             distances = cdist(rest_vertices_norm_used, keypoints)
             weights_init = np.exp(-distances**2 / (2 * 0.1**2))
             weights_init = weights_init / (np.sum(weights_init, axis=1, keepdims=True) + 1e-8)
         elif init_method == 'uniform':
-            # Uniform initialization
+            # 均匀初始化
             weights_init = np.ones((num_vertices, num_joints)) / num_joints
         else:
-            # Random initialization
+            # 随机初始化
             weights_init = np.random.rand(num_vertices, num_joints)
             weights_init = weights_init / (np.sum(weights_init, axis=1, keepdims=True) + 1e-8)
         
-        # Flatten weights for optimization
+        # 展平权重用于优化
         weights_flat_init = weights_init.flatten()
         
-        # Define objective function
+        # 定义目标函数
         def objective(weights_flat):
             return self.compute_lbs_loss(weights_flat, rest_vertices_norm_used, target_vertices_norm_used, 
                                        relative_transforms, regularization_lambda)
         
-        # Use efficient optimization method: large block parallel optimization
-        print(f"Using efficient optimization method...")
-        print(f"Vertex count: {num_vertices}, Joint count: {num_joints}")
+        # 使用高效的优化方法：大块并行优化
+        print(f"使用高效优化方法...")
+        print(f"顶点数: {num_vertices}, 关节数: {num_joints}")
         
-        # Use multi-threaded optimization method for all mesh sizes
-        if num_vertices > 5000:
-            # For large meshes, use sampling strategy
-            # Ensure sample size does not exceed available vertices
-            sample_size = min(3000, num_vertices, len(target_vertices_norm_used))
+        # 大幅减少计算量
+        if num_vertices > 10000:
+            # 对于大网格，使用采样策略
+            # 确保采样大小不超过可用顶点数
+            sample_size = min(5000, num_vertices, len(target_vertices_norm_used))
             sample_indices = np.random.choice(min(num_vertices, len(target_vertices_norm_used)), sample_size, replace=False)
-            print(f"Large mesh detected, sampling {sample_size} vertices for optimization (rest: {num_vertices}, target: {len(target_vertices_norm_used)})")
+            print(f"大网格检测，采样 {sample_size} 个顶点进行优化 (rest: {num_vertices}, target: {len(target_vertices_norm_used)})")
             
-            # Sample vertices and targets
+            # 采样顶点和目标
             sampled_rest = rest_vertices_norm_used[sample_indices]
             sampled_target = target_vertices_norm_used[sample_indices]
             sampled_weights_init = weights_init[sample_indices]
             
-            # Optimize sampled weights
-            optimized_sampled_weights, _ = self.optimize_sampled_weights(
+            # 优化采样的权重
+            optimized_sampled_weights = self.optimize_sampled_weights(
                 sampled_rest, sampled_target, sampled_weights_init, 
                 relative_transforms, regularization_lambda, max_iter // 5
             )
             
-            # Interpolate optimization results to all vertices
+            # 将优化结果插值到所有顶点
             optimized_weights = weights_init.copy()
             optimized_weights[sample_indices] = optimized_sampled_weights
             
-            # Use nearest neighbor interpolation for unsampled vertices
+            # 对未采样的顶点使用最近邻插值
             from sklearn.neighbors import NearestNeighbors
             nbrs = NearestNeighbors(n_neighbors=3, algorithm='kd_tree').fit(sampled_rest)
             distances, indices = nbrs.kneighbors(rest_vertices_norm_used)
             
             for i in range(num_vertices):
                 if i not in sample_indices:
-                    # Use distance-weighted averaging
+                    # 使用距离加权平均
                     weights_sum = np.sum(1.0 / (distances[i] + 1e-6))
                     weighted_weights = np.zeros(num_joints)
                     for j, neighbor_idx in enumerate(indices[i]):
                         weight = (1.0 / (distances[i][j] + 1e-6)) / weights_sum
                         weighted_weights += weight * optimized_sampled_weights[neighbor_idx]
                     optimized_weights[i] = weighted_weights
-                    # Re-normalize
+                    # 重新归一化
                     optimized_weights[i] = optimized_weights[i] / (np.sum(optimized_weights[i]) + 1e-8)
         else:
-            # For small meshes, use direct multi-threaded optimization (no sampling)
-            print(f"Small mesh detected, directly optimizing all {num_vertices} vertices")
-            optimized_weights, _ = self.optimize_sampled_weights(
+            # 对于小网格，使用标准优化
+            optimized_weights = self.optimize_standard_weights(
                 rest_vertices_norm_used, target_vertices_norm_used, weights_init,
-                relative_transforms, regularization_lambda, max_iter // 3
+                relative_transforms, regularization_lambda, max_iter // 5
             )
         
-        # If optimization used fewer vertices than original rest vertices, need to expand to original size
+        # 如果优化使用的顶点数少于原始rest顶点数，需要扩展到原始大小
         if num_vertices < original_rest_vertices:
-            print(f"Expanding weight matrix: {optimized_weights.shape} -> ({original_rest_vertices}, {num_joints})")
-            # Create full-size weight matrix
+            print(f"扩展权重矩阵: {optimized_weights.shape} -> ({original_rest_vertices}, {num_joints})")
+            # 创建完整大小的权重矩阵
             full_optimized_weights = np.zeros((original_rest_vertices, num_joints))
-            # Copy optimized weights
+            # 复制优化的权重
             full_optimized_weights[:num_vertices] = optimized_weights
-            # Use distance-weighted initialization for remaining vertices
+            # 对剩余顶点使用距离加权初始化
             if original_rest_vertices > num_vertices:
                 keypoints = self.keypoints[self.reference_frame_idx, :, :3]
                 remaining_vertices = rest_vertices_norm[num_vertices:original_rest_vertices]
@@ -393,12 +386,12 @@ class AutoSkinning:
             
             optimized_weights = full_optimized_weights
         
-        # Compute final loss (using vertices from optimization)
+        # 计算最终损失（使用优化时的顶点进行计算）
         final_loss = self.compute_lbs_loss(optimized_weights[:num_vertices].flatten(), rest_vertices_norm_used, 
                                          target_vertices_norm_used, relative_transforms, regularization_lambda)
         
-        print(f"Optimization completed, final loss: {final_loss:.6f}")
-        print(f"Returned weight matrix shape: {optimized_weights.shape}")
+        print(f"优化完成，最终损失: {final_loss:.6f}")
+        print(f"返回权重矩阵形状: {optimized_weights.shape}")
         
         return optimized_weights, [final_loss]
     
@@ -414,25 +407,25 @@ class AutoSkinning:
         num_vertices, num_joints = weights_init.shape
         optimized_weights = weights_init.copy()
         
-        print(f"Efficient optimization of sampled weights: {num_vertices} vertices")
+        print(f"🚀 高效优化采样权重: {num_vertices} 顶点")
         
         # 优化参数
         chunk_size = 1000  # 更大的块以提高并行效率
         learning_rate = 0.03  # 更大的学习率
         num_threads = min(8, (num_vertices + chunk_size - 1) // chunk_size)  # 动态线程数
         
-        print(f"Using {num_threads} threads, chunk size: {chunk_size}")
+        print(f"  使用 {num_threads} 个线程，块大小: {chunk_size}")
         
         # 预计算变换矩阵的转置，避免重复计算
         transforms_t = relative_transforms.transpose(0, 2, 1)  # [J, 4, 4] -> [J, 4, 4]
         
         def optimize_chunk(chunk_data):
-            """Optimize a single data chunk"""
+            """优化单个数据块"""
             chunk_indices, chunk_rest, chunk_target, chunk_weights = chunk_data
             
             # 向量化的LBS变换计算
             def fast_apply_lbs(vertices, weights, transforms):
-                """Fast LBS transformation (vectorized version)"""
+                """快速LBS变换（向量化版本）"""
                 num_verts = vertices.shape[0]
                 vertices_homo = np.hstack([vertices, np.ones((num_verts, 1))])  # [N, 4]
                 
@@ -454,7 +447,7 @@ class AutoSkinning:
             
             # 快速梯度计算
             def compute_gradient_fast(weights, vertices, target):
-                """Fast gradient computation (vectorized)"""
+                """快速梯度计算（向量化）"""
                 predicted = fast_apply_lbs(vertices, weights, relative_transforms)
                 error = predicted - target
                 
@@ -492,7 +485,7 @@ class AutoSkinning:
                 return gradient
             
             # 主优化循环
-            for sub_iter in range(3):  # Increase inner iteration count
+            for sub_iter in range(3):  # 增加内层迭代次数
                 # 计算当前预测
                 predicted = fast_apply_lbs(chunk_rest, chunk_weights, relative_transforms)
                 error = predicted - chunk_target
@@ -511,15 +504,15 @@ class AutoSkinning:
             
             return chunk_indices, chunk_weights, chunk_loss
         
-        # Main optimization loop
+        # 主优化循环
         start_time = time.time()
         for iteration in range(max_iter):
             total_loss = 0.0
             
-            # Randomly shuffle vertex order
+            # 随机打乱顶点顺序
             perm = np.random.permutation(num_vertices)
             
-            # Prepare data chunks
+            # 准备数据块
             chunk_data_list = []
             for start_idx in range(0, num_vertices, chunk_size):
                 end_idx = min(start_idx + chunk_size, num_vertices)
@@ -531,31 +524,27 @@ class AutoSkinning:
                 
                 chunk_data_list.append((chunk_indices, chunk_rest, chunk_target, chunk_weights))
             
-            # Multi-threaded parallel optimization
+            # 多线程并行优化
             with ThreadPoolExecutor(max_workers=num_threads) as executor:
-                # Submit all tasks
+                # 提交所有任务
                 future_to_chunk = {executor.submit(optimize_chunk, chunk_data): chunk_data 
                                  for chunk_data in chunk_data_list}
                 
-                # Collect results
+                # 收集结果
                 for future in as_completed(future_to_chunk):
                     chunk_indices, chunk_weights, chunk_loss = future.result()
                     optimized_weights[chunk_indices] = chunk_weights
                     total_loss += chunk_loss * len(chunk_weights) / num_vertices
             
-            # Progress report
-            if iteration % 5 == 0:  # More frequent progress report
+            # 进度报告
+            if iteration % 5 == 0:  # 更频繁的进度报告
                 elapsed = time.time() - start_time
-                print(f"Iteration {iteration}: loss = {total_loss:.6f}, time = {elapsed:.2f}s")
+                print(f"  🚀 迭代 {iteration}: 损失 = {total_loss:.6f}, 耗时 = {elapsed:.2f}s")
         
         total_time = time.time() - start_time
-        print(f"Optimization completed, total time: {total_time:.2f}s")
+        print(f"✅ 优化完成，总耗时: {total_time:.2f}s")
         
-        # Compute final loss
-        final_predicted = self.apply_lbs_transform(rest_vertices, optimized_weights, relative_transforms)
-        final_loss = np.mean(np.sum((final_predicted - target_vertices)**2, axis=1))
-        
-        return optimized_weights, [final_loss]
+        return optimized_weights
     
     def optimize_standard_weights(self, rest_vertices, target_vertices, weights_init,
                                 relative_transforms, regularization_lambda, max_iter):
@@ -565,9 +554,9 @@ class AutoSkinning:
         num_vertices, num_joints = weights_init.shape
         optimized_weights = weights_init.copy()
         
-        print(f"Standard optimization: {num_vertices} vertices")
+        print(f"标准优化: {num_vertices} 顶点")
         
-        chunk_size = 200  # Medium-sized chunk size
+        chunk_size = 200  # 适中的块大小
         learning_rate = 0.01
         
         for iteration in range(max_iter):
@@ -616,13 +605,13 @@ class AutoSkinning:
                 total_loss += chunk_loss * len(chunk_weights) / num_vertices
             
             if iteration % 5 == 0:
-                print(f"Standard optimization iteration {iteration}: loss = {total_loss:.6f}")
+                print(f"  标准优化迭代 {iteration}: 损失 = {total_loss:.6f}")
         
         return optimized_weights
 
     def calc_optimize_frames(self, start_frame_idx, end_frame_idx, step):
         """
-        Calculate optimized frames
+        计算优化帧
         """
         total_frames = len(self.mesh_files)
         if start_frame_idx is None:
@@ -633,50 +622,19 @@ class AutoSkinning:
             step = 2
         optimization_frames = list(range(start_frame_idx, end_frame_idx, step))
         
-        # Remove reference frame
+        # 移除reference frame
         if self.reference_frame_idx in optimization_frames:
             optimization_frames.remove(self.reference_frame_idx)
 
         return optimization_frames
     
-    def _initialize_weights_by_distance(self):
-        """
-        Distance-based weight initialization backup solution
-        """
-        try:
-            num_vertices = len(self.rest_pose_vertices)
-            num_joints = self.keypoints.shape[1]
-            
-            # Use reference frame keypoints
-            keypoints = self.keypoints[self.reference_frame_idx, :, :3]
-            
-            # Calculate distance from vertices to keypoints
-            from scipy.spatial.distance import cdist
-            distances = cdist(self.rest_pose_vertices, keypoints)
-            
-            # Use Gaussian weights
-            weights = np.exp(-distances**2 / (2 * 0.1**2))
-            weights = weights / (np.sum(weights, axis=1, keepdims=True) + 1e-8)
-            
-            print(f"Using distance initialization for backup weights: {weights.shape}")
-            return weights
-            
-        except Exception as e:
-            print(f"Distance initialization failed: {e}")
-            # Last backup solution: uniform weights
-            num_vertices = len(self.rest_pose_vertices) if hasattr(self, 'rest_pose_vertices') else 1000
-            num_joints = self.keypoints.shape[1] if hasattr(self, 'keypoints') else 24
-            weights = np.ones((num_vertices, num_joints)) / num_joints
-            print(f"Using uniform weights as last backup solution: {weights.shape}")
-            return weights
-
     def optimize_reference_frame_skinning(self, optimization_frames=None, regularization_lambda=0.01, max_iter=1000):
         """
-        Optimize skinning weights for reference frame
+        优化reference frame的skinning权重
         
         Args:
-            regularization_lambda: regularization coefficient
-            max_iter: maximum number of iterations
+            regularization_lambda: 正则化系数
+            max_iter: 最大迭代次数
             
         Returns:
             skinning_weights: 优化后的权重矩阵 [V, J]
@@ -685,9 +643,9 @@ class AutoSkinning:
         self.rest_pose_vertices = np.asarray(self.reference_mesh.vertices)
         self.rest_pose_transforms = self.transforms[self.reference_frame_idx]
         
-        print(f"Start optimizing skinning weights for reference frame (frame {self.reference_frame_idx})...")
+        print(f"开始优化reference frame (frame {self.reference_frame_idx}) 的skinning权重...")
         
-        # Optimize all other frames
+        # 对所有其他帧进行优化
         all_weights = []
         all_losses = []
         
@@ -696,72 +654,45 @@ class AutoSkinning:
             optimization_frames = self.calc_optimize_frames(None, None, None)
 
         
-        print(f"Using {len(optimization_frames)} frames for weight optimization: {optimization_frames}")
+        print(f"将使用 {len(optimization_frames)} 帧进行权重优化: {optimization_frames}")
         
-        # 多线程并行优化各帧权重
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        import threading
-        
-        # 确定线程数 - 限制为最多4个线程以平衡性能和资源使用
-        num_threads = min(4, len(optimization_frames))
-        print(f"Using {num_threads} threads for parallel weight optimization...")
-        
-        with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            # 提交所有任务
-            future_to_frame = {
-                executor.submit(self.optimize_skinning_weights_for_frame, 
-                               frame_idx, max_iter, regularization_lambda): frame_idx 
-                for frame_idx in optimization_frames
-            }
-            
-            # 收集结果
-            for future in tqdm(as_completed(future_to_frame), 
-                             total=len(optimization_frames), 
-                             desc="Multi-threaded optimization of each frame weights"):
-                frame_idx = future_to_frame[future]
-                try:
-                    weights, loss_history = future.result()
-                    all_weights.append(weights)
-                    all_losses.extend(loss_history)
-                    print(f"Frame {frame_idx} optimization completed")
-                except Exception as e:
-                    print(f"Frame {frame_idx} optimization failed: {e}")
-                    # Use distance initialization as backup solution
-                    backup_weights = self._initialize_weights_by_distance()
-                    all_weights.append(backup_weights)
-                    print(f"Using backup weight matrix")
-        
-        print(f"Multi-threaded optimization completed, processed {len(all_weights)} frames")
+        # 为每一帧优化权重
+        for frame_idx in tqdm(optimization_frames, desc="优化各帧权重"):
+            weights, loss_history = self.optimize_skinning_weights_for_frame(
+                frame_idx, max_iter=max_iter, regularization_lambda=regularization_lambda
+            )
+            all_weights.append(weights)
+            all_losses.extend(loss_history)
         
         # 验证所有权重矩阵形状一致
         if all_weights:
             # 检查所有权重矩阵的形状
             shapes = [w.shape for w in all_weights]
-            print(f"Collected weight matrix shapes: {shapes}")
+            print(f"收集到的权重矩阵形状: {shapes}")
             
             # 确保所有形状相同
             if len(set(shapes)) > 1:
-                print("Warning: Detected different shape weight matrices, unifying shapes...")
+                print("警告: 检测到不同形状的权重矩阵，正在统一形状...")
                 # 找到最大的形状
                 max_vertices = max(shape[0] for shape in shapes)
                 max_joints = max(shape[1] for shape in shapes)
                 target_shape = (max_vertices, max_joints)
-                print(f"Target shape: {target_shape}")
+                print(f"目标形状: {target_shape}")
                 
                 # 统一所有权重矩阵的形状
                 unified_weights = []
                 for i, weights in enumerate(all_weights):
                     if weights.shape != target_shape:
-                        print(f"Adjusting weight matrix {i}: {weights.shape} -> {target_shape}")
+                        print(f"  调整权重矩阵 {i}: {weights.shape} -> {target_shape}")
                         unified = np.zeros(target_shape)
-                        # Copy existing weights
+                        # 复制现有权重
                         unified[:weights.shape[0], :weights.shape[1]] = weights
-                        # Use distance initialization for new vertices
+                        # 对新增的顶点使用距离初始化
                         if weights.shape[0] < target_shape[0]:
                             keypoints = self.keypoints[self.reference_frame_idx, :, :3]
                             remaining_vertices = self.rest_pose_vertices[weights.shape[0]:target_shape[0]]
                             if len(remaining_vertices) > 0:
-                                # Normalize remaining vertices
+                                # 归一化剩余顶点
                                 remaining_norm = self.normalize_mesh_vertices(
                                     remaining_vertices, 
                                     self.frame_normalization_params[self.reference_frame_idx]
@@ -774,26 +705,26 @@ class AutoSkinning:
                     else:
                         unified_weights.append(weights)
                 all_weights = unified_weights
-                print(f"Shape unification completed, all weight matrix shapes: {[w.shape for w in all_weights]}")
+                print(f"形状统一完成，所有权重矩阵形状: {[w.shape for w in all_weights]}")
             
-            # Average all frame weights as final result
+            # 平均所有帧的权重作为最终结果
             self.skinning_weights = np.mean(all_weights, axis=0)
-            print(f"Weight optimization completed, using average weights of {len(all_weights)} frames")
-            print(f"Final weight matrix shape: {self.skinning_weights.shape}")
+            print(f"权重优化完成，使用了 {len(all_weights)} 帧的平均权重")
+            print(f"最终权重矩阵形状: {self.skinning_weights.shape}")
             
-            # Compute weight statistics
-            weights_per_vertex = np.sum(self.skinning_weights > 0.01, axis=1)  # Number of joints affecting each vertex
-            print(f"Average number of joints affecting each vertex: {np.mean(weights_per_vertex):.2f}")
-            print(f"Weight sparsity: {np.mean(self.skinning_weights > 0.01):.3f}")
+            # 计算权重统计信息
+            weights_per_vertex = np.sum(self.skinning_weights > 0.01, axis=1)  # 每个顶点受影响的关节数
+            print(f"平均每个顶点受 {np.mean(weights_per_vertex):.2f} 个关节影响")
+            print(f"权重稀疏度: {np.mean(self.skinning_weights > 0.01):.3f}")
         else:
-            print("Warning: No successful weight optimization for any frame")
+            print("警告: 没有成功优化任何帧的权重")
             return None
         
         return self.skinning_weights
     
     def validate_skinning_weights(self, test_frames=None):
         """
-        Validate skinning weights effect
+        验证skinning权重的效果
         
         Args:
             test_frames: 测试帧列表，None表示测试所有帧
@@ -802,11 +733,11 @@ class AutoSkinning:
             validation_results: 验证结果字典
         """
         if self.skinning_weights is None:
-            print("Error: Skinning weights not calculated, please call optimize_reference_frame_skinning first")
+            print("错误: 还没有计算skinning权重，请先调用optimize_reference_frame_skinning")
             return None
         
         if test_frames is None:
-            test_frames = list(range(min(len(self.mesh_files), 20)))  # Limit test frames
+            test_frames = list(range(min(len(self.mesh_files), 20)))  # 限制测试帧数
         
         results = {
             'frame_errors': {},
@@ -815,7 +746,7 @@ class AutoSkinning:
             'min_error': float('inf')
         }
         
-        print("Validate skinning weights effect on frames:", test_frames)
+        print("验证skinning权重效果 on frames:", test_frames)
         
         rest_vertices_norm = self.normalize_mesh_vertices(
             self.rest_pose_vertices, 
@@ -825,15 +756,15 @@ class AutoSkinning:
         total_error = 0.0
         valid_frames = 0
         
-        for frame_idx in tqdm(test_frames, desc="Validate frames"):
+        for frame_idx in tqdm(test_frames, desc="验证帧"):
             if frame_idx >= len(self.mesh_files):
                 continue
             
-            # Load target mesh
+            # 加载目标网格
             target_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_idx]))
             target_vertices = np.asarray(target_mesh.vertices)
             
-            # Normalize
+            # 归一化
             if frame_idx not in self.frame_normalization_params:
                 self.frame_normalization_params[frame_idx] = self.compute_mesh_normalization_params(target_mesh)
             
@@ -842,7 +773,7 @@ class AutoSkinning:
                 self.frame_normalization_params[frame_idx]
             )
             
-            # Compute relative transformation
+            # 计算相对变换
             target_transforms = self.transforms[frame_idx]
             rest_transforms = self.transforms[self.reference_frame_idx]
             
@@ -854,24 +785,24 @@ class AutoSkinning:
                 else:
                     relative_transforms[j] = np.eye(4)
             
-            # Use LBS to predict vertex positions
+            # 使用LBS预测顶点位置
             predicted_vertices = self.apply_lbs_transform(
                 rest_vertices_norm, self.skinning_weights, relative_transforms
             )
             
-            # Handle vertex number mismatch
+            # 处理顶点数量不匹配的问题
             if predicted_vertices.shape[0] != target_vertices_norm.shape[0]:
-                print(f"Frame {frame_idx}: vertex number mismatch (predicted: {predicted_vertices.shape[0]}, target: {target_vertices_norm.shape[0]})")
-                # Use smaller number for comparison
+                print(f"   帧 {frame_idx}: 顶点数不匹配 (predicted: {predicted_vertices.shape[0]}, target: {target_vertices_norm.shape[0]})")
+                # 使用较小的数量进行比较
                 min_vertices = min(predicted_vertices.shape[0], target_vertices_norm.shape[0])
                 predicted_vertices_used = predicted_vertices[:min_vertices]
                 target_vertices_used = target_vertices_norm[:min_vertices]
-                print(f"Using first {min_vertices} vertices for error calculation")
+                print(f"   使用前 {min_vertices} 个顶点进行误差计算")
             else:
                 predicted_vertices_used = predicted_vertices
                 target_vertices_used = target_vertices_norm
             
-            # Compute error
+            # 计算误差
             vertex_errors = np.linalg.norm(predicted_vertices_used - target_vertices_used, axis=1)
             frame_error = np.mean(vertex_errors)
             
@@ -891,16 +822,16 @@ class AutoSkinning:
         if valid_frames > 0:
             results['average_error'] = total_error / valid_frames
             
-            print(f"Validation completed!")
-            print(f"Average reconstruction error: {results['average_error']:.6f}")
-            print(f"Maximum error: {results['max_error']:.6f}")
-            print(f"Minimum error: {results['min_error']:.6f}")
+            print(f"验证完成！")
+            print(f"平均重建误差: {results['average_error']:.6f}")
+            print(f"最大误差: {results['max_error']:.6f}")
+            print(f"最小误差: {results['min_error']:.6f}")
         
         return results
     
     def test_lbs_reconstruction_quality(self, test_frames=None, save_meshes=False, output_dir="output/lbs_test"):
         """
-        Test LBS reconstruction quality
+        测试LBS重建质量的详细方法
         
         Args:
             test_frames: 测试帧列表，None表示自动选择
@@ -914,42 +845,42 @@ class AutoSkinning:
         import matplotlib.pyplot as plt
         
         if self.skinning_weights is None:
-            print("Error: Need to load or calculate skinning weights first")
+            print("错误: 需要先加载或计算skinning权重")
             return None
         
-        # Automatically select test frames
+        # 自动选择测试帧
         if test_frames is None:
             total_frames = len(self.mesh_files)
             if total_frames <= 20:
                 test_frames = list(range(total_frames))
             else:
-                # Select representative frames: start, middle, end, and some random frames
+                # 选择代表性帧：开始、中间、结束，以及一些随机帧
                 test_frames = []
-                test_frames.extend([0, 1, 2])  # Start frames
-                test_frames.extend([total_frames//4, total_frames//2, 3*total_frames//4])  # Middle frames
-                test_frames.extend([total_frames-3, total_frames-2, total_frames-1])  # End frames
-                # Add some random frames
+                test_frames.extend([0, 1, 2])  # 开始几帧
+                test_frames.extend([total_frames//4, total_frames//2, 3*total_frames//4])  # 中间帧
+                test_frames.extend([total_frames-3, total_frames-2, total_frames-1])  # 结束几帧
+                # 添加一些随机帧
                 import random
                 random_frames = random.sample(range(3, total_frames-3), min(6, total_frames-9))
                 test_frames.extend(random_frames)
-                test_frames = sorted(list(set(test_frames)))  # Remove duplicates and sort
+                test_frames = sorted(list(set(test_frames)))  # 去重排序
         
-        print(f"🔍 Test LBS reconstruction quality")
-        print(f"Test frames: {test_frames}")
-        print(f"Reference frame: {self.reference_frame_idx}")
+        print(f"🔍 测试LBS重建质量")
+        print(f"测试帧: {test_frames}")
+        print(f"参考帧: {self.reference_frame_idx}")
         
-        # Create output directory
+        # 创建输出目录
         if save_meshes:
             output_path = Path(output_dir)
             output_path.mkdir(parents=True, exist_ok=True)
         
-        # Prepare rest pose data
+        # 准备rest pose数据
         rest_vertices_norm = self.normalize_mesh_vertices(
             self.rest_pose_vertices, 
             self.frame_normalization_params[self.reference_frame_idx]
         )
         
-        # Test results
+        # 测试结果
         detailed_results = {
             'test_config': {
                 'test_frames': test_frames,
@@ -966,19 +897,19 @@ class AutoSkinning:
         
         all_errors = []
         all_times = []
-        distance_errors = []  # Error vs. distance from reference frame
+        distance_errors = []  # 误差与距离参考帧的关系
         
-        print(f"\nStart testing {len(test_frames)} frames...")
+        print(f"\n开始测试 {len(test_frames)} 帧...")
         
-        for i, frame_idx in enumerate(tqdm(test_frames, desc="Test reconstruction quality")):
+        for i, frame_idx in enumerate(tqdm(test_frames, desc="测试重建质量")):
             if frame_idx >= len(self.mesh_files):
                 continue
             
-            # Load target mesh
+            # 加载目标网格
             target_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_idx]))
             target_vertices = np.asarray(target_mesh.vertices)
             
-            # Normalize
+            # 归一化
             if frame_idx not in self.frame_normalization_params:
                 self.frame_normalization_params[frame_idx] = self.compute_mesh_normalization_params(target_mesh)
             
@@ -987,7 +918,7 @@ class AutoSkinning:
                 self.frame_normalization_params[frame_idx]
             )
             
-            # Compute relative transformation
+            # 计算相对变换
             target_transforms = self.transforms[frame_idx]
             rest_transforms = self.transforms[self.reference_frame_idx]
             
@@ -999,14 +930,14 @@ class AutoSkinning:
                 else:
                     relative_transforms[j] = np.eye(4)
             
-            # LBS reconstruction test
+            # LBS重建测试
             start_time = time.time()
             predicted_vertices = self.apply_lbs_transform(
                 rest_vertices_norm, self.skinning_weights, relative_transforms
             )
             lbs_time = time.time() - start_time
             
-            # Compute detailed error metrics
+            # 计算详细误差指标
             vertex_errors = np.linalg.norm(predicted_vertices - target_vertices_norm, axis=1)
             
             frame_result = {
@@ -1022,20 +953,20 @@ class AutoSkinning:
                 'p95_error': float(np.percentile(vertex_errors, 95)),
                 'p99_error': float(np.percentile(vertex_errors, 99)),
                 'lbs_time': lbs_time,
-                'vertices_with_large_error': int(np.sum(vertex_errors > 0.05)),  # Number of vertices with large error
-                'error_ratio_large': float(np.sum(vertex_errors > 0.05) / len(vertex_errors))  # Large error ratio
+                'vertices_with_large_error': int(np.sum(vertex_errors > 0.05)),  # 大误差顶点数
+                'error_ratio_large': float(np.sum(vertex_errors > 0.05) / len(vertex_errors))  # 大误差比例
             }
             
             detailed_results['frame_results'][frame_idx] = frame_result
             
-            # Collect statistics
+            # 收集统计数据
             all_errors.extend(vertex_errors)
             all_times.append(lbs_time)
             distance_errors.append((frame_result['distance_from_ref'], frame_result['mean_error']))
             
-            # Save mesh (if needed)
+            # 保存网格（如果需要）
             if save_meshes:
-                # Save reconstructed mesh
+                # 保存重建网格
                 reconstructed_mesh = o3d.geometry.TriangleMesh()
                 reconstructed_mesh.vertices = o3d.utility.Vector3dVector(predicted_vertices)
                 if hasattr(target_mesh, 'triangles') and len(target_mesh.triangles) > 0:
@@ -1044,9 +975,9 @@ class AutoSkinning:
                 mesh_output_path = output_path / f"frame_{frame_idx:06d}_reconstructed.obj"
                 o3d.io.write_triangle_mesh(str(mesh_output_path), reconstructed_mesh)
                 
-                # Save error visualization mesh
+                # 保存误差可视化网格
                 normalized_errors = vertex_errors / np.max(vertex_errors)
-                error_colors = plt.cm.plasma(normalized_errors)[:, :3]  # Use plasma color mapping
+                error_colors = plt.cm.plasma(normalized_errors)[:, :3]  # 使用plasma颜色映射
                 
                 error_mesh = o3d.geometry.TriangleMesh()
                 error_mesh.vertices = target_mesh.vertices
@@ -1056,7 +987,7 @@ class AutoSkinning:
                 error_output_path = output_path / f"frame_{frame_idx:06d}_error_colored.obj"
                 o3d.io.write_triangle_mesh(str(error_output_path), error_mesh)
         
-        # Compute summary statistics
+        # 计算汇总统计
         if all_errors:
             all_errors = np.array(all_errors)
             detailed_results['summary_stats'] = {
@@ -1075,7 +1006,7 @@ class AutoSkinning:
                 'large_error_ratio': float(np.sum(all_errors > 0.05) / len(all_errors))
             }
         
-        # Performance statistics
+        # 性能统计
         if all_times:
             detailed_results['performance_stats'] = {
                 'mean_lbs_time': float(np.mean(all_times)),
@@ -1085,35 +1016,35 @@ class AutoSkinning:
                 'fps_estimate': float(len(all_times) / np.sum(all_times)) if np.sum(all_times) > 0 else 0
             }
         
-        # Analyze error vs. distance
+        # 分析误差与距离的关系
         if distance_errors:
             distances, errors = zip(*distance_errors)
-            if len(set(distances)) > 1:  # Different distance data points
+            if len(set(distances)) > 1:  # 有不同距离的数据点
                 correlation = np.corrcoef(distances, errors)[0, 1]
                 detailed_results['distance_analysis'] = {
                     'correlation_with_distance': float(correlation),
                     'distance_error_pairs': distance_errors
                 }
         
-        # Output summary
-        print(f"\nTest completed summary:")
+        # 输出总结
+        print(f"\n📊 测试完成总结:")
         if 'summary_stats' in detailed_results:
             stats = detailed_results['summary_stats']
-            print(f"Overall average error: {stats['overall_mean_error']:.6f}")
-            print(f"Overall RMSE: {stats['overall_rmse']:.6f}")
-            print(f"Error range: [{stats['overall_min_error']:.6f}, {stats['overall_max_error']:.6f}]")
-            print(f"Large error vertex ratio: {stats['large_error_ratio']*100:.2f}%")
+            print(f"总体平均误差: {stats['overall_mean_error']:.6f}")
+            print(f"总体RMSE: {stats['overall_rmse']:.6f}")
+            print(f"误差范围: [{stats['overall_min_error']:.6f}, {stats['overall_max_error']:.6f}]")
+            print(f"大误差顶点比例: {stats['large_error_ratio']*100:.2f}%")
         
         if 'performance_stats' in detailed_results:
             perf = detailed_results['performance_stats']
-            print(f"Average LBS time: {perf['mean_lbs_time']:.3f}s")
-            print(f"Estimated FPS: {perf['fps_estimate']:.1f} FPS")
+            print(f"平均LBS时间: {perf['mean_lbs_time']:.3f}s")
+            print(f"估计帧率: {perf['fps_estimate']:.1f} FPS")
         
         if 'distance_analysis' in detailed_results:
             dist_analysis = detailed_results['distance_analysis']
-            print(f"Error vs. distance from reference frame correlation: {dist_analysis['correlation_with_distance']:.3f}")
+            print(f"误差与距离参考帧相关性: {dist_analysis['correlation_with_distance']:.3f}")
         
-        # Save detailed results
+        # 保存详细结果
         if save_meshes:
             import json
             results_path = output_path / "test_results.json"
@@ -1129,25 +1060,28 @@ class AutoSkinning:
             with open(results_path, 'w', encoding='utf-8') as f:
                 json.dump(serializable_results, f, indent=2, ensure_ascii=False)
             
-            print(f"\nDetailed results saved:")
-            print(f"    Test results: {results_path}")
-            print(f"    Reconstructed mesh: {output_path}/*_reconstructed.obj")
-            print(f"    Error visualization: {output_path}/*_error_colored.obj")
+            print(f"\n💾 详细结果已保存:")
+            print(f"   测试结果: {results_path}")
+            print(f"   重建网格: {output_path}/*_reconstructed.obj")
+            print(f"   误差可视化: {output_path}/*_error_colored.obj")
         
         return detailed_results
     
     def save_skinning_weights(self, output_path):
         """
-        Save self's skinning weights
+        保存skinning权重
+        
+        Args:
+            output_path: 输出文件路径
         """
         if self.skinning_weights is None:
-            print("Error: No skinning weights to save")
+            print("错误: 没有可保存的skinning权重")
             return
         
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Save weights and related information
+        # 保存权重和相关信息
         skinning_data = {
             'weights': self.skinning_weights,
             'rest_vertices': self.rest_pose_vertices,
@@ -1158,19 +1092,18 @@ class AutoSkinning:
         }
         
         np.savez_compressed(output_path, **skinning_data)
-        print(f"Skinning weights saved to: {output_path}")
-        
+        print(f"Skinning权重已保存到: {output_path}")
 
     def load_skinning_weights(self, input_path):
         """
-        Load skinning weights
+        加载skinning权重
         
         Args:
-            input_path: input file path
+            input_path: 输入文件路径
         """
         input_path = Path(input_path)
         if not input_path.exists():
-            print(f"Error: File Does Not Exist: {input_path}")
+            print(f"错误: 文件不存在: {input_path}")
             return False
         
         try:
@@ -1178,170 +1111,170 @@ class AutoSkinning:
             self.skinning_weights = data['weights']
             self.rest_pose_vertices = data['rest_vertices']
             self.rest_pose_transforms = data['rest_transforms']
-            self.reference_frame_idx = data['reference_frame_idx'].item()  # Ensure integer
+            self.reference_frame_idx = data['reference_frame_idx'].item()  # 确保是整数
             
-            print(f"Successfully loaded skinning weights:")
-            print(f"  - Weight matrix shape: {self.skinning_weights.shape}")
-            print(f"  - Rest pose vertices: {len(self.rest_pose_vertices)}")
+            print(f"成功加载skinning权重:")
+            print(f"  - 权重矩阵形状: {self.skinning_weights.shape}")
+            print(f"  - Rest pose顶点数: {len(self.rest_pose_vertices)}")
             print(f"  - Reference frame: {data['reference_frame_idx']}")
             
-            return self.skinning_weights
+            return True
         except Exception as e:
             print(f"加载skinning权重失败: {e}")
-            return None
+            return False
 
 def run_auto_skinning_pipeline(reference_frame_idx = 5):
     """
-    Automatic skinning calculation and visualization pipeline
+    自动蒙皮计算和可视化pipeline
     """
-    print("Start automatic skinning calculation Pipeline")
+    print("🚀 开始自动蒙皮计算Pipeline")
     print("=" * 60)
     
-    # Configure paths
+    # 配置路径
     skeleton_data_dir = "output/skeleton_prediction"
     mesh_folder_path = "D:/Code/VVEditor/Rafa_Approves_hd_4k"
-    weights_output_path = f"output/skinning_weights/skinning_weights_{reference_frame_idx}.npz"
+    weights_output_path = f"output/skinning_weights_{reference_frame_idx}.npz"
     
-    # Initialize
+    # 初始化
     skinner = AutoSkinning(
         skeleton_data_dir=skeleton_data_dir,
-        reference_frame_idx=reference_frame_idx  # Use the 5th frame as reference
+        reference_frame_idx=reference_frame_idx  # 使用第5帧作为参考
     )
     
-    # Load data
-    print("Loading mesh sequence...")
+    # 加载数据
+    print("📁 加载网格序列...")
     skinner.load_mesh_sequence(mesh_folder_path)
     skinner.rest_pose_transforms = skinner.transforms[skinner.reference_frame_idx]
     skinner.rest_pose_vertices = np.asarray(skinner.reference_mesh.vertices)
     
-    print(f"Data loaded:")
-    print(f"    Vertices: {len(skinner.rest_pose_vertices):,}")
-    print(f"    Joints: {skinner.num_joints}")
-    print(f"    Skeleton frames: {skinner.num_frames}")
-    print(f"    Mesh files: {len(skinner.mesh_files)}")
+    print(f"✅ 数据加载完成:")
+    print(f"   顶点数: {len(skinner.rest_pose_vertices):,}")
+    print(f"   关节数: {skinner.num_joints}")
+    print(f"   骨骼帧数: {skinner.num_frames}")
+    print(f"   网格文件数: {len(skinner.mesh_files)}")
 
     if not os.path.exists(weights_output_path):        
-        # Optimize skinning weights
-        print("\n🔧 Start optimizing skinning weights...")
+        # 优化蒙皮权重
+        print("\n🔧 开始优化蒙皮权重...")
 
         optimization_frames = skinner.calc_optimize_frames(reference_frame_idx - 10, reference_frame_idx + 10, 2)
 
         skinner.skinning_weights = skinner.optimize_reference_frame_skinning(
             regularization_lambda=0.01,
             optimization_frames=optimization_frames,
-            max_iter=100  # Medium number of iterations
+            max_iter=100  # 适中的迭代次数
         )
         
         if skinner.skinning_weights is None:
-            print("Skinning weights optimization failed")
+            print("❌ 蒙皮权重优化失败")
             return
         
-        # Save weights
-        print(f"\nSave skinning weights to: {weights_output_path}")
+        # 保存权重
+        print(f"\n💾 保存蒙皮权重到: {weights_output_path}")
         skinner.save_skinning_weights(weights_output_path)
     else:
-        print(f"Skinning weights file already exists: {weights_output_path}")
+        print(f"✅ 蒙皮权重文件已存在: {weights_output_path}")
         skinner.load_skinning_weights(weights_output_path)
     
-    # Quick validation
-    print("\nQuick validation skinning effect...")
-    # Calculate available test frames
+    # 快速验证
+    print("\n📊 快速验证蒙皮效果...")
+    # 计算可用的测试帧
     max_skeleton_frame = skinner.num_frames - 1
     test_frames = list(range(0, max_skeleton_frame + 1, max_skeleton_frame // 10))
     if skinner.reference_frame_idx in test_frames:
         test_frames.remove(skinner.reference_frame_idx)
 
-    print(f"Plan to test frames: {test_frames}")
+    print(f"📋 计划测试帧: {test_frames}")
     validation_results = skinner.validate_skinning_weights(test_frames=test_frames)
     
     if validation_results:
-        print(f"\nValidation completed:")
-        print(f"    Average error: {validation_results['average_error']:.6f}")
-        print(f"    Error range: [{validation_results['min_error']:.6f}, {validation_results['max_error']:.6f}]")
+        print(f"\n✅ 验证完成:")
+        print(f"   平均误差: {validation_results['average_error']:.6f}")
+        print(f"   误差范围: [{validation_results['min_error']:.6f}, {validation_results['max_error']:.6f}]")
         
-        # Find the best and worst frames
+        # 找到最好和最差的帧
         best_frame = min(validation_results['frame_errors'].items(), 
                         key=lambda x: x[1]['mean_error'])
         worst_frame = max(validation_results['frame_errors'].items(), 
                          key=lambda x: x[1]['mean_error'])
         
-        print(f"    Best frame: {best_frame[0]} (error: {best_frame[1]['mean_error']:.6f})")
-        print(f"    Worst frame: {worst_frame[0]} (error: {worst_frame[1]['mean_error']:.6f})")
+        print(f"   最佳帧: {best_frame[0]} (误差: {best_frame[1]['mean_error']:.6f})")
+        print(f"   最差帧: {worst_frame[0]} (误差: {worst_frame[1]['mean_error']:.6f})")
         
-        # Select frames to visualize
+        # 选择要可视化的帧
         viz_frames = [best_frame[0], worst_frame[0]]
         if len(test_frames) > 2:
-            # Add a medium quality frame
+            # 添加一个中等质量的帧
             middle_frame = sorted(validation_results['frame_errors'].items(), 
                                 key=lambda x: x[1]['mean_error'])[len(validation_results['frame_errors'])//2]
             viz_frames.append(middle_frame[0])
         
-        viz_frames = sorted(list(set(viz_frames)))[:3]  # Maximum 3 frames
+        viz_frames = sorted(list(set(viz_frames)))[:3]  # 最多3帧
         
-        print(f"\nPrepare to visualize reconstruction comparison (frames: {viz_frames})...")
+        print(f"\n🎨 准备可视化重建对比 (帧: {viz_frames})...")
         
-        # Automatically run visualization
+        # 自动运行可视化
         run_reconstruction_visualization(skinner, viz_frames, weights_output_path)
     
-    print("\nAutomatic skinning Pipeline completed!")
-    print(f"Weights file: {weights_output_path}")
-    print(f"Test results displayed")
+    print("\n🎉 自动蒙皮Pipeline完成!")
+    print(f"💾 权重文件: {weights_output_path}")
+    print(f"📊 测试结果已显示")
 
 def run_reconstruction_visualization(skinner, viz_frames, weights_path):
     """
-    Run reconstruction visualization comparison
+    运行重建可视化对比
     """
     import subprocess
     import sys
     
-    print(f"Start reconstruction visualization...")
+    print(f"🖥️  启动重建可视化...")
     
     for frame_idx in viz_frames:
-        print(f"    Visualize frame {frame_idx}...")
+        print(f"   可视化帧 {frame_idx}...")
         try:
-            # Run visualization script
+            # 运行可视化脚本
             result = subprocess.run([
                 sys.executable, "simple_visualize.py", str(frame_idx)
             ], capture_output=True, text=True, timeout=30)
             
             if result.returncode == 0:
-                print(f"    Frame {frame_idx} visualization completed")
-                # Parse error information in output
+                print(f"   ✅ 帧 {frame_idx} 可视化完成")
+                # 解析输出中的误差信息
                 lines = result.stdout.split('\n')
                 for line in lines:
-                    if 'Average error:' in line or 'Maximum error:' in line or 'RMSE:' in line:
+                    if '平均误差:' in line or '最大误差:' in line or 'RMSE:' in line:
                         print(f"      {line.strip()}")
             else:
-                print(f"    Frame {frame_idx} visualization failed: {result.stderr[:100]}")
+                print(f"   ⚠️  帧 {frame_idx} 可视化失败: {result.stderr[:100]}")
                 
         except subprocess.TimeoutExpired:
-            print(f"    Frame {frame_idx} visualization timeout")
+            print(f"   ⚠️  帧 {frame_idx} 可视化超时")
         except Exception as e:
-            print(f"    Frame {frame_idx} visualization error: {e}")
+            print(f"   ⚠️  帧 {frame_idx} 可视化错误: {e}")
     
-    # Run batch export
-    print(f"\nExport mesh files for external viewing...")
+    # 运行批量导出
+    print(f"\n📦 导出mesh文件用于外部查看...")
     try:
         result = subprocess.run([
             sys.executable, "simple_visualize.py", "export"
         ], capture_output=True, text=True, timeout=60)
         
         if result.returncode == 0:
-            print(f"    Batch export completed")
-            # Find export path
+            print(f"   ✅ 批量导出完成")
+            # 查找导出路径
             lines = result.stdout.split('\n')
             for line in lines:
-                if 'All files exported to:' in line:
-                    print(f"   {line.strip()}")
+                if '所有文件已导出到:' in line:
+                    print(f"   📁 {line.strip()}")
         else:
-            print(f"    Batch export failed")
+            print(f"   ⚠️  批量导出失败")
             
     except Exception as e:
-        print(f"    Batch export error: {e}")
+        print(f"   ⚠️  批量导出错误: {e}")
 
 def main():
     """
-    Main function - Run complete automatic skinning pipeline
+    主函数 - 运行完整的自动蒙皮pipeline
     """
     args = sys.argv[1:]
     reference_frame_idx = 5

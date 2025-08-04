@@ -340,6 +340,14 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
                 print(f"  - BBW skinning initialization failed")
         
         # 调用插值方法 - start_frame和end_frame已经是排序后文件列表的索引
+        # interpolated_frames = interpolator.generate_interpolated_frames(
+        #     frame_start=start_frame,
+        #     frame_end=end_frame,
+        #     num_interpolate=num_interpolate,
+        #     max_optimize_frames=5,
+        #     optimize_weights=True,
+        #     output_dir=str(output_paths['interpolation'])
+        # )
         interpolated_frames = interpolator.generate_interpolated_frames(
             frame_start=start_frame,
             frame_end=end_frame,
@@ -388,7 +396,7 @@ def main():
     parser.add_argument("end_frame", type=int, help="End Frame Index (index in sorted file list, starting from 0)")
     parser.add_argument("--num_interpolate", type=int, default=10, help="Number of Interpolated Frames (Default: 10)")
     parser.add_argument("--method", choices=["baseline", "dual_reference", "adaptive_similarity", "neural_marionette", "bbw_enhanced"], 
-                       default="bbw_enhanced", help="Interpolation Method (Default: bbw_enhanced)") 
+                       default="baseline", help="Interpolation Method (Default: bbw_enhanced)") 
     parser.add_argument("--skip-skinning", action="store_true", help="Skip skinning weights optimization")
     parser.add_argument("--result_path", help="Results Info Saved Once Interpolation Finished")
     parser.add_argument("--evaluation-mode", action="store_true", help="Enable evaluation mode with unified output directory")
@@ -408,6 +416,8 @@ def main():
     if not VERTEX_COLOR_AVAILABLE:
         print("Error: Vertex color processing not available, please check dependencies")
         return
+
+    # VERTEX_COLOR_AVAILABLE = False
     
     # Validate evaluation mode parameters
     if args.evaluation_mode and not args.evaluation_output_dir:

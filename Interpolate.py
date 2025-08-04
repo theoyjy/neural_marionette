@@ -107,99 +107,104 @@ class VolumetricInterpolator:
         try:
             data = np.load(weights_path)
             self.skinning_weights = data['weights']
+            
+            # 🔧 修复：确保reference_frame_idx被正确设置
+            if 'reference_frame_idx' in data:
+                self.reference_frame_idx = data['reference_frame_idx'].item()
+            else:
+                # 如果权重文件中没有reference_frame_idx，尝试从文件名推断
+                import re
+                match = re.search(r'ref(\d+)_', str(weights_path))
+                if match:
+                    self.reference_frame_idx = int(match.group(1))
+                    print(f"⚠️  从文件名推断参考帧: {self.reference_frame_idx}")
+                else:
+                    self.reference_frame_idx = 0  # 默认使用0
+                    print(f"⚠️  使用默认参考帧: {self.reference_frame_idx}")
+            
             print(f"Successfully loaded skinning weights:")
             print(f"  - Weight matrix shape: {self.skinning_weights.shape}")
+            print(f"  - Reference frame: {self.reference_frame_idx}")
+            
             return True
         except Exception as e:
             print(f"Failed to load skinning weights: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def optimize_weights_using_skinning(self, frame_start, frame_end, max_optimize_frames=5):
         """
-        Optimize weights using Skinning.py
+        ✅ 恢复Work版本的简单权重优化逻辑
         
         Args:
-            frame_start: start frame index
-            frame_end: end frame index
-            max_optimize_frames: maximum number of optimization frames
+            frame_start: 起始帧索引
+            frame_end: 结束帧索引
+            max_optimize_frames: 最大优化帧数
             
         Returns:
-            success: whether successful
+            success: 是否成功
         """
         start_time = time.time()
         
         try:
             from Skinning import AutoSkinning
             
-            print(f"Call Skinning.py for weight optimization...")
-            print(f"  - Reference Frame: {frame_start}")
-            print(f"  - Optimization Frame Range: {frame_start}-{frame_end}")
-            print(f"  - Maximum Optimization Frames: {max_optimize_frames}")
+            print(f"🔧 调用Skinning.py进行权重优化...")
+            print(f"  - 参考帧: {frame_start}")
+            print(f"  - 优化帧范围: {frame_start}-{frame_end}")
+            print(f"  - 最大优化帧数: {max_optimize_frames}")
             
-            # Select all available frames for optimization
-            # New logic: use all available mesh files in the directory
-            reference_frame = frame_start
-            available_frames = []
+            # 生成权重文件路径 - 与Work版本一致
+            weights_filename = f"skinning_weights_ref{frame_start}_opt{frame_start}-{frame_end}_step1.npz"
             
-            # Check how many frame_XXX.obj files are in the directory
-            mesh_dir = Path(self.mesh_folder_path)
-            frame_files = sorted(mesh_dir.glob("frame_*.obj"))
-            
-            if len(frame_files) > 2:
-                # If there are extra frame files, use all available frames
-                for i in range(len(frame_files)):
-                    available_frames.append(i)
-                print(f"  - Found {len(frame_files)} frame files, will be used for skinning weight optimization")
+                        # 🔧 优先使用work版本权重文件（动作效果更好）
+            work_weights_filename = "skinning_weights_ref0_work.npz"
+            sparse_weights_filename = "skinning_weights_ref0_sparse.npz"
+
+            # 确保使用正确的输出目录
+            if hasattr(self, 'output_dir') and self.output_dir:
+                # 如果插值器有output_dir，使用它
+                weights_path = Path(self.output_dir) / "skinning_weights" / weights_filename
+                work_weights_path = Path(self.output_dir) / "skinning_weights" / work_weights_filename
+                sparse_weights_path = Path(self.output_dir) / "skinning_weights" / sparse_weights_filename
             else:
-                # Fall back to original logic
-                for i in range(max(0, reference_frame - 5), min(self.num_frames, reference_frame + 6)):
-                    available_frames.append(i)
-                print(f"  - Use default reference frame nearby frame strategy")
+                # 否则使用默认路径
+                weights_path = Path("output") / "skinning_weights" / weights_filename
+                work_weights_path = Path("output") / "skinning_weights" / work_weights_filename
+                sparse_weights_path = Path("output") / "skinning_weights" / sparse_weights_filename
+
+            # 优先顺序：work版本 > 稀疏版本 > 原始版本
+            if work_weights_path.exists():
+                print(f"🎯 使用work版本权重文件（动作效果更好）: {work_weights_path}")
+                weights_path = work_weights_path
+            elif sparse_weights_path.exists():
+                print(f"🎯 使用稀疏权重文件: {sparse_weights_path}")
+                weights_path = sparse_weights_path
             
-            # Limit to use at most max_optimize_frames frames
-            if len(available_frames) > max_optimize_frames:
-                # Prioritize frames around reference frame
-                center_idx = available_frames.index(reference_frame)
-                half_range = max_optimize_frames // 2
-                
-                # Expand selection of frames from center to both sides
-                start_idx = max(0, center_idx - half_range)
-                end_idx = min(len(available_frames), center_idx + half_range + 1)
-                optimize_frames = available_frames[start_idx:end_idx]
-                
-                # If not enough max_optimize_frames, supplement from both sides
-                while len(optimize_frames) < max_optimize_frames and (start_idx > 0 or end_idx < len(available_frames)):
-                    if start_idx > 0:
-                        start_idx -= 1
-                        optimize_frames.insert(0, available_frames[start_idx])
-                    if len(optimize_frames) < max_optimize_frames and end_idx < len(available_frames):
-                        optimize_frames.append(available_frames[end_idx])
-                        end_idx += 1
-                
-                print(f"  - Available frames around reference {reference_frame}: {len(available_frames)}, selected {len(optimize_frames)} frames")
-            else:
-                optimize_frames = available_frames
+            print(f"  - 权重文件路径: {weights_path}")
             
-            if not optimize_frames:
-                print("No frames to optimize")
-                return False
-            
-            # Unify weight file naming format
-            weights_filename = f"ref{frame_start}_opt{optimize_frames[0]}-{optimize_frames[-1]}_num{len(optimize_frames)}.npz"
-            weights_path = Path(self.weights_path) / weights_filename
-            
-            print(f"  - Weights File Path: {weights_path}")
-            
-            # check if weights file exists
+            # 检查是否已存在权重文件
             if weights_path.exists():
-                print(f"Found existing weights file: {weights_path}")
-                self.load_skinning_weights(str(weights_path))
+                print(f"✅ 发现已存在的权重文件: {weights_path}")
+                print(f"🔍 DEBUG: 权重文件信息:")
+                print(f"  - 文件大小: {weights_path.stat().st_size} bytes")
+                success = self.load_skinning_weights(str(weights_path))
+                if success:
+                    print(f"✅ 权重文件加载成功")
+                    print(f"  - 参考帧: {getattr(self, 'reference_frame_idx', 'Unknown')}")
+                    print(f"  - 权重形状: {self.skinning_weights.shape if self.skinning_weights is not None else 'None'}")
+            else:
+                print(f"❌ 权重文件加载失败，将重新优化")
+                # 如果加载失败，删除损坏的文件并重新优化
+                weights_path.unlink(missing_ok=True)
+                return False
                 return True
             
-            # Create output directory
+            # 创建输出目录
             weights_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Initialize Skinning system
+            # 初始化Skinning系统
             skinner = AutoSkinning(
                 skeleton_data_dir=self.skeleton_data_dir,
                 reference_frame_idx=frame_start
@@ -208,43 +213,52 @@ class VolumetricInterpolator:
             # 加载网格序列
             skinner.load_mesh_sequence(self.mesh_folder_path)
             
-            print(f"  - Optimization Frames: {optimize_frames}")
+            # 选择优化帧
+            optimize_frames = []
+            for i in range(frame_start, min(frame_end + 1, frame_start + max_optimize_frames)):
+                if i < len(skinner.mesh_files):
+                    optimize_frames.append(i)
             
-            # Use multi-thread optimization method
-            print(f"    Call Skinning.py's optimize_reference_frame_skinning with multithread...")
+            if not optimize_frames:
+                print("⚠️  没有需要优化的帧")
+                return False
+            
+            print(f"  - 优化帧: {optimize_frames}")
+            
+            # 直接使用Skinning的优化方法
+            print(f"   调用Skinning.py的optimize_reference_frame_skinning...")
             optimization_start = time.time()
             
-            # First try optimization, then apply to all frames
             skinner.skinning_weights = skinner.optimize_reference_frame_skinning(
                 optimization_frames=optimize_frames,
                 regularization_lambda=0.01,
-                max_iter=100  # Reduce iterations in evaluation mode to save time
+                max_iter=200  # 适中的迭代次数
             )
             
             optimization_time = time.time() - optimization_start
             
             if skinner.skinning_weights is not None:
-                print(f"Weight Optimization Completed")
-                print(f"  - Weight Matrix Shape: {skinner.skinning_weights.shape}")
-                print(f"  - Optimization Time: {optimization_time:.2f} seconds")
+                print(f"✅ 权重优化完成")
+                print(f"  - 权重矩阵形状: {skinner.skinning_weights.shape}")
+                print(f"  - 优化耗时: {optimization_time:.2f}秒")
                 
-                # Save weights
+                # 保存权重
                 skinner.save_skinning_weights(str(weights_path))
-                print(f"  - Weights Saved to: {weights_path}")
+                print(f"  - 权重已保存到: {weights_path}")
                 
-                # Load optimized weights to interpolator
+                # 加载优化后的权重到插值器
                 self.load_skinning_weights(str(weights_path))
-                print(f"Weights Loaded to Interpolator")
+                print(f"✅ 权重已加载到插值器")
                 
                 total_time = time.time() - start_time
-                print(f"Total Time: {total_time:.2f} seconds")
+                print(f"⏱️  总耗时: {total_time:.2f}秒")
                 return True
             else:
-                print("Weight Optimization Failed!")
+                print("❌ 权重优化失败")
                 return False
                 
         except Exception as e:
-            print(f"Call Skinning.py for weight optimization failed: {e}")
+            print(f"❌ 调用Skinning.py优化权重失败: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -623,16 +637,27 @@ class VolumetricInterpolator:
         
         interpolated_frames = []
         
-        # 权重优化
+        # ✅ 修复：权重优化也要使用真正的起始帧作为参考！
+        print(f"\n🔍 DEBUG: 权重优化检查:")
+        print(f"  - optimize_weights: {optimize_weights}")
+        print(f"  - self.skinning_weights is None: {self.skinning_weights is None}")
+        print(f"  - 将调用权重优化: {optimize_weights and self.skinning_weights is None}")
+        
         if optimize_weights and self.skinning_weights is None:
-            print(f"\nStart weight optimization...")
+            print(f"\n✅ 开始权重优化（使用真正的起始帧 {frame_start} 作为参考）...")
             optimization_start = time.time()
             
-            if not self.optimize_weights_using_skinning(actual_start, actual_end, max_optimize_frames):
-                print("Weight optimization failed, will use simple interpolation")
+            if not self.optimize_weights_using_skinning(frame_start, frame_end, max_optimize_frames):
+                print("⚠️  权重优化失败，将使用简单插值")
             
             optimization_time = time.time() - optimization_start
-            print(f"Total weight optimization time: {optimization_time:.2f} seconds")
+            print(f"⏱️  权重优化总耗时: {optimization_time:.2f}秒")
+        elif self.skinning_weights is not None:
+            print(f"\n✅ 使用已有权重矩阵")
+            print(f"  - 权重矩阵形状: {self.skinning_weights.shape}")
+            print(f"  - 参考帧索引: {getattr(self, 'reference_frame_idx', 'Unknown')}")
+        else:
+            print(f"\n⚠️  跳过权重优化（optimize_weights=False）")
         
         # 生成插值帧
         print(f"\nStart generating {len(t_values)} interpolation frames...")
@@ -643,12 +668,14 @@ class VolumetricInterpolator:
             print(f"  Generate interpolation frame {i+1}/{len(t_values)} (t={t:.3f})...")
             
             try:
-                # 插值骨骼变换 - 使用实际帧范围
-                interpolated_transforms = self.interpolate_skeleton_transforms(actual_start, actual_end, t)
+                # ✅ 修复：恢复Work版本的参数传递方式
+                # 使用原始的frame_start, frame_end而不是actual_start, actual_end
+                # 这样确保真正的起始帧被用作参考
+                interpolated_transforms = self.interpolate_skeleton_transforms(frame_start, frame_end, t)
                 
-                # 生成插值帧数据 - 使用实际帧范围
+                # 生成插值帧数据 - 使用原始帧索引
                 frame_data = self.generate_single_interpolated_frame(
-                    actual_start, actual_end, t, interpolated_transforms, output_dir, i,
+                    frame_start, frame_end, t, interpolated_transforms, output_dir, i,
                     smooth_mesh, subdivide_iter, save_npy_files, save_standard_obj
                 )
                 
@@ -682,26 +709,247 @@ class VolumetricInterpolator:
     
     def generate_single_interpolated_frame(self, frame_start, frame_end, t, interpolated_transforms, output_dir, frame_idx, smooth_mesh=False, subdivide_iter=3, save_npy_files=False, save_standard_obj=True):
         """
-        生成单个插值帧
+        生成单个插值帧 - 恢复到Work版本的简单正确逻辑
+        
+        ✅ 正确的Volumetric Interpolation流程:
+        1. Learn start frame weights  
+        2. Start mesh with texture/colors
+        3. Interpolate skeleton
+        4. Apply relative transform via LBS
+        5. Result: deformed start mesh with colors
         
         Args:
-            frame_start: 起始帧
-            frame_end: 结束帧
-            t: 插值参数
+            frame_start: 起始帧索引
+            frame_end: 结束帧索引
+            t: 插值参数 [0, 1]
             interpolated_transforms: 插值后的变换矩阵
             output_dir: 输出目录
             frame_idx: 帧索引
-            smooth_mesh: 是否平滑网格
-            subdivide_iter: 细分迭代次数
-            save_npy_files: 是否保存npy文件（通常不需要）
-            save_standard_obj: 是否保存标准obj文件（避免重复）
         """
-        return self._generate_frame_core(
-            frame_start, frame_end, t, interpolated_transforms, 
-            output_dir, frame_idx, smooth_mesh, subdivide_iter, 
-            save_npy_files, save_standard_obj,
-            reference_frame=frame_start, skinning_weights=self.skinning_weights
-        )
+        # ✅ 步骤1: 加载参考网格（固定使用起始帧 - 这是关键！）
+        reference_mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_start]))
+        reference_vertices = np.asarray(reference_mesh.vertices)
+        reference_faces = np.asarray(reference_mesh.triangles) if len(reference_mesh.triangles) > 0 else None
+        
+        # 计算全局归一化参数（用于一致的空间处理）
+        all_meshes = []
+        all_vertices = []
+        
+        # 收集相关帧的网格信息
+        frame_indices = [frame_start, frame_end]
+        for idx in frame_indices:
+            mesh = o3d.io.read_triangle_mesh(str(self.mesh_files[idx]))
+            vertices = np.asarray(mesh.vertices)
+            all_meshes.append(mesh)
+            all_vertices.append(vertices)
+        
+        # 计算全局归一化参数
+        all_vertices_flat = np.vstack(all_vertices)
+        global_bmax = np.amax(all_vertices_flat, axis=0)
+        global_bmin = np.amin(all_vertices_flat, axis=0)
+        global_blen = (global_bmax - global_bmin).max()
+        
+        global_normalization_params = {
+            'bmin': global_bmin,
+            'bmax': global_bmax,
+            'blen': global_blen,
+            'scale': 1.0,
+            'x_trans': 0.0,
+            'z_trans': 0.0
+        }
+        
+        # 使用全局参数归一化参考网格
+        reference_vertices_norm = self.normalize_mesh_vertices(reference_vertices, global_normalization_params)
+        
+        # ✅ 步骤2: 应用LBS变换生成网格
+        print(f"🔍 DEBUG: skinning_weights状态检查:")
+        print(f"  - self.skinning_weights is not None: {self.skinning_weights is not None}")
+        if self.skinning_weights is not None:
+            print(f"  - 权重矩阵形状: {self.skinning_weights.shape}")
+            print(f"  - 权重矩阵范围: [{self.skinning_weights.min():.6f}, {self.skinning_weights.max():.6f}]")
+        else:
+            print(f"  ❌ 没有权重矩阵！将使用fallback插值")
+        
+        if self.skinning_weights is not None:
+            # 确保权重矩阵与顶点数量匹配（简单处理）
+            if self.skinning_weights.shape[0] != len(reference_vertices_norm):
+                print(f"⚠️  权重矩阵顶点数 ({self.skinning_weights.shape[0]}) 与参考网格顶点数 ({len(reference_vertices_norm)}) 不匹配")
+                # 调整权重矩阵大小
+                if self.skinning_weights.shape[0] > len(reference_vertices_norm):
+                    self.skinning_weights = self.skinning_weights[:len(reference_vertices_norm)]
+                else:
+                    # 扩展权重矩阵
+                    extended_weights = np.zeros((len(reference_vertices_norm), self.skinning_weights.shape[1]))
+                    extended_weights[:self.skinning_weights.shape[0]] = self.skinning_weights
+                    # 对新增顶点使用距离初始化
+                    keypoints = self.keypoints[frame_start, :, :3]
+                    remaining_vertices = reference_vertices_norm[self.skinning_weights.shape[0]:]
+                    if len(remaining_vertices) > 0:
+                        distances = cdist(remaining_vertices, keypoints)
+                        remaining_weights = np.exp(-distances**2 / (2 * 0.1**2))
+                        remaining_weights = remaining_weights / (np.sum(remaining_weights, axis=1, keepdims=True) + 1e-8)
+                        extended_weights[self.skinning_weights.shape[0]:] = remaining_weights
+                    self.skinning_weights = extended_weights
+            
+            # ✅ 步骤3: 使用相对变换进行LBS（关键逻辑！）
+            print(f"✅ 使用相对变换进行LBS...")
+            print(f"🔍 DEBUG: 变换信息:")
+            print(f"  - frame_start: {frame_start}, frame_end: {frame_end}, t: {t}")
+            
+            # 获取参考帧变换（固定使用起始帧作为参考）
+            reference_transforms = self.transforms[frame_start]
+            print(f"  - reference_transforms形状: {reference_transforms.shape}")
+            print(f"  - interpolated_transforms形状: {interpolated_transforms.shape}")
+            
+            # 检查插值变换是否真的在变化
+            transforms_diff = np.linalg.norm(interpolated_transforms - reference_transforms)
+            print(f"  - 插值变换与参考变换的差异magnitude: {transforms_diff:.6f}")
+            if transforms_diff < 1e-6:
+                print(f"  ⚠️  警告: 插值变换几乎没有变化！")
+            
+            # 计算从参考帧到插值帧的相对变换
+            relative_transforms = np.zeros_like(interpolated_transforms)
+            for j in range(self.num_joints):
+                if np.linalg.det(reference_transforms[j][:3, :3]) > 1e-6:
+                    ref_inv = np.linalg.inv(reference_transforms[j])
+                    relative_transforms[j] = interpolated_transforms[j] @ ref_inv
+                else:
+                    relative_transforms[j] = np.eye(4)
+            
+            # 检查相对变换
+            relative_magnitude = np.linalg.norm(relative_transforms - np.eye(4))
+            print(f"  - 相对变换magnitude: {relative_magnitude:.6f}")
+            if relative_magnitude < 1e-6:
+                print(f"  ⚠️  警告: 相对变换几乎是单位矩阵！")
+            
+            # 应用LBS变换（使用相对变换）
+            print(f"🔍 DEBUG: LBS变换前顶点统计:")
+            print(f"  - reference_vertices_norm 形状: {reference_vertices_norm.shape}")
+            print(f"  - reference_vertices_norm 范围: [{reference_vertices_norm.min():.3f}, {reference_vertices_norm.max():.3f}]")
+            
+            transformed_vertices_norm = self.apply_lbs_transform(
+                reference_vertices_norm, self.skinning_weights, relative_transforms
+            )
+            
+            print(f"🔍 DEBUG: LBS变换后顶点统计:")
+            print(f"  - transformed_vertices_norm 形状: {transformed_vertices_norm.shape}")
+            print(f"  - transformed_vertices_norm 范围: [{transformed_vertices_norm.min():.3f}, {transformed_vertices_norm.max():.3f}]")
+            
+            # 检查变换是否真的发生了
+            vertices_diff = np.linalg.norm(transformed_vertices_norm - reference_vertices_norm)
+            print(f"  - 顶点变化magnitude: {vertices_diff:.6f}")
+            if vertices_diff < 1e-6:
+                print(f"  ⚠️  警告: 顶点几乎没有变化！LBS可能没有生效")
+            
+            # 使用全局参数反归一化
+            transformed_vertices = self.denormalize_mesh_vertices(
+                transformed_vertices_norm, global_normalization_params
+            )
+            
+            # ✅ 步骤4: 修复坐标系对齐
+            print(f"✅ 修复坐标系对齐...")
+            
+            # 计算网格中心
+            mesh_center = np.mean(transformed_vertices, axis=0)
+            
+            # 计算骨骼中心（使用插值后的绝对变换）
+            joint_positions = interpolated_transforms[:, :3, 3]
+            joint_center = np.mean(joint_positions, axis=0)
+            
+            # 计算偏移量
+            offset = mesh_center - joint_center
+            
+            # 调整骨骼位置到网格坐标系
+            adjusted_transforms = interpolated_transforms.copy()
+            for j in range(self.num_joints):
+                adjusted_transforms[j][:3, 3] += offset
+            
+            # 更新插值后的变换
+            interpolated_transforms = adjusted_transforms
+            
+            print(f"  - 网格中心: {mesh_center}")
+            print(f"  - 调整前骨骼中心: {joint_center}")
+            print(f"  - 调整后骨骼中心: {np.mean(adjusted_transforms[:, :3, 3], axis=0)}")
+            print(f"  - 偏移量: {offset}")
+        else:
+            # 如果没有权重，使用改进的顶点插值
+            mesh_start = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_start]))
+            mesh_end = o3d.io.read_triangle_mesh(str(self.mesh_files[frame_end]))
+            
+            vertices_start = np.asarray(mesh_start.vertices)
+            vertices_end = np.asarray(mesh_end.vertices)
+            
+            min_vertices = min(len(vertices_start), len(vertices_end))
+            
+            # 归一化两个网格
+            vertices_start_norm = self.normalize_mesh_vertices(vertices_start[:min_vertices], global_normalization_params)
+            vertices_end_norm = self.normalize_mesh_vertices(vertices_end[:min_vertices], global_normalization_params)
+            
+            # 对齐网格和骨骼
+            print(f"对齐网格和骨骼（无权重模式）...")
+            vertices_start_aligned = self.align_mesh_with_skeleton(vertices_start_norm, interpolated_transforms)
+            vertices_end_aligned = self.align_mesh_with_skeleton(vertices_end_norm, interpolated_transforms)
+            
+            # 在归一化空间中进行插值
+            interpolated_vertices_norm = (1-t) * vertices_start_aligned + t * vertices_end_aligned
+            
+            # 反归一化
+            transformed_vertices = self.denormalize_mesh_vertices(interpolated_vertices_norm, global_normalization_params)
+        
+        # ✅ 步骤5: 创建插值网格（简单直接）
+        interpolated_mesh = o3d.geometry.TriangleMesh()
+        interpolated_mesh.vertices = o3d.utility.Vector3dVector(transformed_vertices)
+        if reference_faces is not None:
+            interpolated_mesh.triangles = o3d.utility.Vector3iVector(reference_faces)
+        
+        # 插值关键点
+        interpolated_keypoints = self.interpolate_keypoints(frame_start, frame_end, t)
+        
+        # ✅ 步骤6: 保存插值帧数据
+        frame_data = {
+            'frame_idx': frame_idx,
+            'interpolation_t': t,
+            'mesh': interpolated_mesh,
+            'transforms': interpolated_transforms,
+            'keypoints': interpolated_keypoints,
+            'vertices': transformed_vertices
+        }
+        
+        # 保存到文件（如果需要）
+        if output_dir:
+            mesh_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}.obj"
+            
+            print(f"🔍 DEBUG: 保存插值文件:")
+            print(f"  - 输出路径: {mesh_output_path}")
+            print(f"  - 网格顶点数: {len(transformed_vertices)}")
+            print(f"  - 网格面数: {len(reference_faces) if reference_faces is not None else 0}")
+            
+            try:
+                # 确保输出目录存在
+                mesh_output_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # 保存mesh
+                success = o3d.io.write_triangle_mesh(str(mesh_output_path), interpolated_mesh)
+                if success:
+                    print(f"  ✅ mesh文件保存成功: {mesh_output_path}")
+                else:
+                    print(f"  ❌ mesh文件保存失败: {mesh_output_path}")
+                
+                # 保存变换数据
+                transform_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}_transforms.npy"
+                np.save(transform_output_path, interpolated_transforms)
+                print(f"  ✅ 变换数据保存: {transform_output_path}")
+                
+                keypoints_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}_keypoints.npy"
+                np.save(keypoints_output_path, interpolated_keypoints)
+                print(f"  ✅ 关键点数据保存: {keypoints_output_path}")
+                
+            except Exception as e:
+                print(f"  ❌ 保存文件时出错: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        return frame_data
     
     def _generate_frame_core(self, frame_start, frame_end, t, interpolated_transforms, 
                            output_dir, frame_idx, smooth_mesh=False, subdivide_iter=3, 
@@ -1628,9 +1876,9 @@ class DualReferenceInterpolator(VolumetricInterpolator):
                 
                 # 返回与原始格式兼容的结果
                 return {
-                    'mesh': frame_result['mesh'],
-                    'transforms': frame_result['transforms'],
-                    'keypoints': frame_result['keypoints'],
+                        'mesh': frame_result['mesh'],
+                        'transforms': frame_result['transforms'],
+                        'keypoints': frame_result['keypoints'],
                     't': t,
                     'reference_frame': reference_frame
                 }
