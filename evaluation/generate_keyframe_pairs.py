@@ -11,6 +11,7 @@ import trimesh
 from scipy.spatial.transform import Rotation
 import argparse
 import json
+import random
 from pathlib import Path
 
 def load_dfaust_data(hdf5_path, subject_id="50002", sequence_id="jumping_jacks"):
@@ -67,7 +68,10 @@ def extract_keyframe_pairs(vertices, faces, joints, parents, k=10, max_pairs=Non
     T = vertices.shape[0]
     keyframe_pairs = []
     
-    for start_idx in range(0, T - k, k):
+    #pick max_pairs frames from start_range
+    start_range = random.sample(list(range(0, T - k, 1)), max_pairs)
+
+    for start_idx in start_range:
         end_idx = start_idx + k
         
         # 如果指定了max_pairs且已经生成了足够的pairs，则停止
@@ -280,17 +284,17 @@ def save_keyframe_pair(pair_info, output_dir, pair_idx, k_value):
     return pair_info_path
 
 def main():
-    parser = argparse.ArgumentParser(description="生成关键帧对")
+    parser = argparse.ArgumentParser(description="Generate keyframe pairs")
     parser.add_argument("--hdf5_path", type=str, 
                        default="evaluation/data/dfaust/registrations_m.hdf5",
-                       help="DFAUST HDF5文件路径")
+                       help="DFAUST HDF5 file path")
     parser.add_argument("--output_dir", type=str, 
                        default="evaluation/data/dfaust/keyframe_pairs",
-                       help="输出基础目录")
+                       help="Output base directory")
     parser.add_argument("--k", type=int, default=10,
-                       help="每隔k帧抽取一对")
+                       help="Extract one keyframe pair every k frames")
     parser.add_argument("--max_pairs", type=int, default=None,
-                       help="最大生成的关键帧对数量（None表示不限制）")
+                       help="Maximum number of keyframe pairs to generate (None means no limit)")
     parser.add_argument("--subject_id", type=str, default="50002",
                        help="DFAUST subject ID")
     parser.add_argument("--sequence_id", type=str, default="jumping_jacks",
@@ -298,14 +302,14 @@ def main():
     
     args = parser.parse_args()
     
-    # 从hdf5路径提取数据库名
+    # Extract database name from hdf5 path
     database_name = Path(args.hdf5_path).stem
     
-    # 创建具体的输出目录，包含database_name、subject_sequence和k值信息
+    # Create specific output directory, including database_name, subject_sequence, and k value information
     specific_output_dir = Path(args.output_dir) / database_name / f"{args.subject_id}_{args.sequence_id}"
     specific_output_dir.mkdir(parents=True, exist_ok=True)
     
-    print(f"Load DFAUST data: {args.hdf5_path}")
+    print(f"Loading DFAUST data: {args.hdf5_path}")
     print(f"Output directory: {specific_output_dir}")
     vertices, faces, joints, parents = load_dfaust_data(
         args.hdf5_path, args.subject_id, args.sequence_id
@@ -317,7 +321,7 @@ def main():
     
     # 生成关键帧对
     keyframe_pairs = extract_keyframe_pairs(vertices, faces, joints, parents, args.k, args.max_pairs)
-    max_pairs_info = f" (限制为{args.max_pairs})" if args.max_pairs else ""
+    max_pairs_info = f" (limited to {args.max_pairs})" if args.max_pairs else ""
     print(f"Generated {len(keyframe_pairs)} keyframe pairs{max_pairs_info}")
     
     # 保存关键帧对
@@ -327,7 +331,7 @@ def main():
     for i, pair_info in enumerate(keyframe_pairs):
         pair_info_path = save_keyframe_pair(pair_info, output_dir, i, args.k)
         pair_info_paths.append(str(pair_info_path))
-        print(f"Save keyframe pair {i}: {pair_info_path}")
+        print(f"Saved keyframe pair {i}: {pair_info_path}")
 
     # 创建k值子目录并保存索引文件
     k_dir = Path(output_dir) / f"k{args.k}"
@@ -345,7 +349,7 @@ def main():
             'hdf5_path': str(args.hdf5_path)
         }, f, indent=2)
     
-    print(f"All keyframe pairs saved to: {output_dir}")
+    print(f"All keyframe pairs saved to: {output_dir}/k{args.k}")
 
 if __name__ == "__main__":
     main() 

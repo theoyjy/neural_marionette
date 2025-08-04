@@ -34,7 +34,7 @@ def run_interpolation_for_pair(pair_info_path, method, output_dir, database_name
     end_frame_path = database_dir / f"frame_{end_idx:03d}.obj"
     
     if not start_frame_path.exists() or not end_frame_path.exists():
-        print(f"警告: 无法找到关键帧文件 {start_frame_path} 或 {end_frame_path}")
+        print(f"WARNING: Cannot find keyframe files {start_frame_path} or {end_frame_path}")
         return False
     
     # 检查优化帧文件
@@ -45,7 +45,7 @@ def run_interpolation_for_pair(pair_info_path, method, output_dir, database_name
             missing_frames.append(frame_idx)
     
     if missing_frames:
-        print(f"警告: 缺少优化帧文件: {missing_frames}")
+        print(f"WARNING: Missing optimization frames: {missing_frames}")
         return False
 
     
@@ -73,9 +73,9 @@ def run_interpolation_for_pair(pair_info_path, method, output_dir, database_name
     # 原本应该是 k-1 个中间帧，现在改为 min(k-1, 5)
     k_frames = end_idx - start_idx - 1  # 实际的k-1个中间帧
     num_interpolate = min(k_frames, 5)  # 限制最多5个
-    print(f"  检测到帧索引: start={start_idx}, end={end_idx}")
-    print(f"  原本需要插值帧数: {k_frames}, 实际使用: {num_interpolate}")
-    print(f"  优化帧索引: {gt_frame_indices}")
+    print(f"  Detected frame indices: start={start_idx}, end={end_idx}")
+    print(f"  Originally needed to interpolate frames: {k_frames}, actually used: {num_interpolate}")
+    print(f"  Optimized frame indices: {gt_frame_indices}")
     
     # 运行插值命令 - 使用数据库目录路径和正确的帧索引
     python_exe = r"C:\Users\sky\miniconda3\envs\nmario\python.exe"
@@ -90,7 +90,7 @@ def run_interpolation_for_pair(pair_info_path, method, output_dir, database_name
         "--evaluation-output-dir", str(method_output_dir)
     ]
     
-    print(f"运行插值: {' '.join(cmd)}")
+    print(f"Running interpolation: {' '.join(cmd)}")
     
     # 初始化性能监控器
     monitor = PerformanceMonitor(monitor_interval=0.5)
@@ -112,8 +112,8 @@ def run_interpolation_for_pair(pair_info_path, method, output_dir, database_name
         performance_summary = monitor.save_performance_data(performance_file)
         
         if result.returncode == 0:
-            print(f"插值成功: {method} - {pair_name} (耗时: {end_time - start_time:.2f}s)")
-            print(f"性能数据已保存: {performance_file}")
+            print(f"Interpolation success: {method} - {pair_name} (Time: {end_time - start_time:.2f}s)")
+            print(f"Performance data saved: {performance_file}")
             
             # 简化版性能汇总
             if performance_summary:
@@ -121,61 +121,62 @@ def run_interpolation_for_pair(pair_info_path, method, output_dir, database_name
                 mem_max = performance_summary.get('memory_usage_gb', {}).get('max', 0)
                 gpu_avg = performance_summary.get('gpu_usage_percent', {}).get('avg', 0)
                 gpu_mem_max = performance_summary.get('gpu_memory_gb', {}).get('max', 0)
-                print(f"性能汇总: CPU平均{cpu_avg:.1f}%, 内存峰值{mem_max:.2f}GB, GPU平均{gpu_avg:.1f}%, GPU内存峰值{gpu_mem_max:.2f}GB")
+                print(f"Performance summary: CPU average {cpu_avg:.1f}%, memory peak {mem_max:.2f}GB, GPU average {gpu_avg:.1f}%, GPU memory peak {gpu_mem_max:.2f}GB")
             
             if result.stdout:
-                print(f"标准输出: {result.stdout}")
+                print(f"Standard output: {result.stdout}")
             return True
         else:
-            print(f"插值失败: {method} - {pair_name}")
-            print(f"返回码: {result.returncode}")
+            print(f"Interpolation failed: {method} - {pair_name}")
+            print(f"Return code: {result.returncode}")
             if result.stderr:
-                print(f"错误输出: {result.stderr}")
+                print(f"Error output: {result.stderr}")
             if result.stdout:
-                print(f"标准输出: {result.stdout}")
+                print(f"Standard output: {result.stdout}")
             return False
     except subprocess.TimeoutExpired:
         monitor.stop_monitoring()
         # 即使超时也保存性能数据，有助于诊断性能问题
-        performance_file = eval_interpolation_output / f"performance_{method}_{pair_name}_timeout.json"
+        
+        performance_file = method_output_dir / f"performance_{method}_{pair_name}_timeout.json"
         monitor.save_performance_data(performance_file)
-        print(f"插值超时: {method} - {pair_name}")
+        print(f"Interpolation timeout: {method} - {pair_name}")
         return False
     except Exception as e:
         monitor.stop_monitoring()
         # 异常情况也保存性能数据
-        performance_file = eval_interpolation_output / f"performance_{method}_{pair_name}_error.json"
+        performance_file = method_output_dir / f"performance_{method}_{pair_name}_error.json"
         monitor.save_performance_data(performance_file)
-        print(f"插值异常: {method} - {pair_name} - {e}")
+        print(f"Interpolation exception: {method} - {pair_name} - {e}")
         return False
 
 def main():
-    parser = argparse.ArgumentParser(description="运行插值评估")
+    parser = argparse.ArgumentParser(description="Run interpolation evaluation")
     parser.add_argument("--pairs_dir", type=str, 
                        default="evaluation/data/dfaust/keyframe_pairs",
-                       help="关键帧对目录 (如果指定具体路径，应包含database_name/subject_sequence子目录)")
+                       help="Keyframe pairs directory (if specified, should contain database_name/subject_sequence subdirectory)")
     parser.add_argument("--output_dir", type=str, 
                        default="evaluation/interpolation",
-                       help="结果输出目录")
+                       help="Result output directory")
     parser.add_argument("--methods", nargs="+", 
                        default=["baseline", "dual_reference"],
-                       help="要运行的插值方法")
+                       help="Methods to run")
     parser.add_argument("--max_pairs", type=int, default=None,
-                       help="最大处理的关键帧对数量")
+                        help="Maximum number of keyframe pairs to process")
     parser.add_argument("--database_name", type=str, default="dfaust",
-                       help="数据库名称")
+                       help="Database name")
     parser.add_argument("--subject_id", type=str, default=None,
                        help="Subject ID")
     parser.add_argument("--sequence_id", type=str, default=None,
                        help="Sequence ID")
     parser.add_argument("--k", type=int, default=None,
-                       help="指定k值（如果不指定，使用第一个找到的k值目录）")
+                       help="Specify k value (if not specified, use the first found k value directory)")
     
     args = parser.parse_args()
     
     pairs_dir = Path(args.pairs_dir)
     if not pairs_dir.exists():
-        print(f"错误: 关键帧对目录不存在 {pairs_dir}")
+        print(f"ERROR: Keyframe pairs directory does not exist: {pairs_dir}")
         return
     
     # 查找具体的database/subject_sequence路径和k值子目录
@@ -204,9 +205,9 @@ def main():
         
         if possible_paths:
             k_dir = possible_paths[0]  # 使用第一个找到的
-            print(f"找到k{args.k}目录: {k_dir}")
+            print(f"Found k{args.k} directory: {k_dir}")
         else:
-            print(f"错误: 指定的k值目录不存在 k{args.k}")
+            print(f"ERROR: Specified k value directory does not exist k{args.k}")
             return
     else:
         # 查找所有k值子目录
@@ -217,12 +218,12 @@ def main():
             if root_path.is_dir() and root_path.name.startswith('k') and root_path.name[1:].isdigit():
                 k_dirs.append(root_path)
         if not k_dirs:
-            print(f"错误: 在 {pairs_dir} 及其子目录中未找到k值子目录")
+            print(f"ERROR: No k value subdirectory found in {pairs_dir} or its subdirectories")
             return
         # 使用第一个找到的k值目录
         k_dir = k_dirs[0]
     
-    print(f"使用k值目录: {k_dir}")
+    print(f"Using k value directory: {k_dir}")
     
     # 读取关键帧对索引
     pairs_index_file = k_dir / "pairs_index.json"
@@ -249,7 +250,7 @@ def main():
             args.subject_id = pairs_index.get('subject_id', '50002')
         if not args.sequence_id:
             args.sequence_id = pairs_index.get('sequence_id', 'jumping_jacks')
-        print(f"从pairs_index.json获取信息: subject_id={args.subject_id}, sequence_id={args.sequence_id}")
+        print(f"Got information from pairs_index.json: subject_id={args.subject_id}, sequence_id={args.sequence_id}")
     else:
         # 如果没有索引文件，扫描k_dir中的pair_xxx.json文件
         pair_info_paths = list(k_dir.glob("pair_*.json"))
@@ -264,15 +265,15 @@ def main():
     if args.max_pairs:
         pair_info_paths = pair_info_paths[:args.max_pairs]
     
-    print(f"找到 {len(pair_info_paths)} 个关键帧对")
-    print(f"输出路径结构: evaluation/{args.database_name}/{args.subject_id}_{args.sequence_id}/")
+    print(f"Found {len(pair_info_paths)} keyframe pairs")
+    print(f"Output path structure: evaluation/{args.database_name}/{args.subject_id}_{args.sequence_id}/")
     
     # 统计结果
     results = {method: {'success': 0, 'failed': 0} for method in args.methods}
     
     # 对每个关键帧对运行所有方法
     for i, pair_info_path in enumerate(pair_info_paths):
-        print(f"\n处理关键帧对 {i+1}/{len(pair_info_paths)}: {pair_info_path.name}")
+        print(f"\nProcessing keyframe pair {i+1}/{len(pair_info_paths)}: {pair_info_path.name}")
         
         for method in args.methods:
             success = run_interpolation_for_pair(
@@ -287,11 +288,11 @@ def main():
                 results[method]['failed'] += 1
     
     # 输出统计结果
-    print(f"\n插值完成统计:")
+    print(f"\nInterpolation completion statistics:")
     for method in args.methods:
         total = results[method]['success'] + results[method]['failed']
         success_rate = results[method]['success'] / total * 100 if total > 0 else 0
-        print(f"{method}: 成功 {results[method]['success']}/{total} ({success_rate:.1f}%)")
+        print(f"{method}: Success {results[method]['success']}/{total} ({success_rate:.1f}%)")
 
 if __name__ == "__main__":
     main() 

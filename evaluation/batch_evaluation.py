@@ -33,7 +33,7 @@ class BatchEvaluator:
     def run_single_evaluation(self, hdf5_path, subject_id, sequence_id, k=10, max_pairs=2, no_gt=False):
         """运行单次评估"""
         print(f"\n{'='*60}")
-        print(f"评估: {subject_id}_{sequence_id} (k={k}, max_pairs={max_pairs}, no_gt={no_gt})")
+        print(f"Evaluation: {subject_id}_{sequence_id} (k={k}, max_pairs={max_pairs}, no_gt={no_gt})")
         print(f"{'='*60}")
         
         # 构造命令
@@ -44,8 +44,8 @@ class BatchEvaluator:
             "--sequence_id", sequence_id,
             "--k", str(k),
             "--max_pairs", str(max_pairs),
-            "--timeout", "300",  # 5分钟超时
-            "--python_path", self.python_path  # 传递python路径给子进程
+            "--timeout", "300",  # 5 minutes timeout
+            "--python_path", self.python_path  # Pass python path to subprocess
         ]
         
         if no_gt:
@@ -81,7 +81,7 @@ class BatchEvaluator:
             self.results.append(eval_result)
             
             if success:
-                print(f"✅ 评估成功完成 (耗时: {duration:.1f}秒)")
+                print(f"Evaluation completed successfully (Time: {duration:.1f} seconds)")
                 
                 # 尝试解析最终报告中的信息
                 try:
@@ -92,18 +92,18 @@ class BatchEvaluator:
                             content = f.read()
                         eval_result['final_report'] = content
                 except Exception as e:
-                    print(f"无法读取最终报告: {e}")
+                    print(f"Cannot read final report: {e}")
                     
             else:
-                print(f"评估失败 (返回码: {result.returncode}, 耗时: {duration:.1f}秒)")
-                print(f"错误输出:\n{result.stderr}")
+                print(f"Evaluation failed (Return code: {result.returncode}, Time: {duration:.1f} seconds)")
+                print(f"Error output:\n{result.stderr}")
             
             return success
             
         except subprocess.TimeoutExpired:
             end_time = time.time()
             duration = end_time - start_time
-            print(f"⏰ 评估超时 (耗时: {duration:.1f}秒)")
+            print(f"Evaluation timeout (Time: {duration:.1f} seconds)")
             
             eval_result = {
                 'subject_id': subject_id,
@@ -126,7 +126,7 @@ class BatchEvaluator:
         except Exception as e:
             end_time = time.time()
             duration = end_time - start_time
-            print(f"💥 评估异常: {e}")
+            print(f"Evaluation exception: {e}")
             
             eval_result = {
                 'subject_id': subject_id,
@@ -148,21 +148,21 @@ class BatchEvaluator:
     
     def run_comprehensive_evaluation(self, test_mode=False):
         """运行全面评估"""
-        print("开始DFAUST数据集批量评估")
-        print(f"测试模式: {'是' if test_mode else '否'}")
-        print(f"Python路径: {self.python_path}")
+        print("Start DFAUST data set batch evaluation")
+        print(f"Test mode: {'Yes' if test_mode else 'No'}")
+        print(f"Python path: {self.python_path}")
         
-        # 加载序列信息
+        # Load sequence information
         sequences_info = self.load_sequences_info()
         if not sequences_info:
             return
         
-        # 定义测试参数组合
+        # Define test parameter combinations
         if test_mode:
-            # 测试模式：快速验证
+            # Test mode: quick verification
             k_values = [10, 20]
-            max_pairs = 1  # 固定值，用于快速测试
-            # 只测试部分序列
+            max_pairs = 1  # Fixed value, used for quick testing
+            # Only test part of the sequences
             test_sequences = [
                 ('male', '50002', 'jumping_jacks'),
                 ('female', '50004', 'jumping_jacks'),
@@ -170,35 +170,35 @@ class BatchEvaluator:
                 ('female', '50020', 'running_on_spot')
             ]
         else:
-            # 完整模式：全面测试
-            k_values = [5, 10, 15, 20]
-            max_pairs = 3  # 固定值，评估所有可用pairs（通常最多3个）
+            # Full mode: comprehensive testing
+            k_values = [10, 20, 40, 80]
+            max_pairs = 3  # Fixed value, evaluate all available pairs (usually at most 3)
             test_sequences = []
             
-            # 添加所有序列
+            # Add all sequences
             for gender in ['male', 'female']:
                 for subject_id, sequences in sequences_info[gender].items():
                     for sequence_id in sequences:
                         test_sequences.append((gender, subject_id, sequence_id))
         
-        print(f"计划测试 {len(test_sequences)} 个序列")
-        print(f"参数组合: k={k_values}, max_pairs={max_pairs}")
+        print(f"Plan to test {len(test_sequences)} sequences")
+        print(f"Parameter combinations: k={k_values}, max_pairs={max_pairs}")
         
         total_tests = len(test_sequences) * len(k_values)
-        print(f"总测试数量: {total_tests}")
+        print(f"Total test number: {total_tests}")
         
         # if not test_mode and total_tests > 100:
-        #     confirm = input(f"将要运行 {total_tests} 个测试，这可能需要很长时间。继续吗？(y/N): ")
+        #     confirm = input(f"Will run {total_tests} tests, which may take a long time. Continue? (y/N): ")
         #     if confirm.lower() != 'y':
-        #         print("用户取消评估")
+        #         print("User cancelled evaluation")
         #         return
         
-        # 运行评估
+        # Run evaluation
         test_count = 0
         success_count = 0
         
         for gender, subject_id, sequence_id in test_sequences:
-            # 确定HDF5文件路径
+            # Determine HDF5 file path
             if gender == 'male':
                 hdf5_path = "evaluation/data/dfaust/registrations_m.hdf5"
             else:
@@ -206,7 +206,7 @@ class BatchEvaluator:
             
             for k in k_values:
                 test_count += 1
-                print(f"\n进度: {test_count}/{total_tests}")
+                print(f"\nProgress: {test_count}/{total_tests}")
                 
                 success = self.run_single_evaluation(
                     hdf5_path, subject_id, sequence_id, k, max_pairs, no_gt=False
@@ -215,13 +215,13 @@ class BatchEvaluator:
                 if success:
                     success_count += 1
                 
-                # 清理output目录以节省空间
+                # Clean up output directory to save space
                 self.cleanup_output_dir()
         
         print(f"\n{'='*60}")
-        print(f"批量评估完成!")
-        print(f"成功: {success_count}/{total_tests} ({success_count/total_tests*100:.1f}%)")
-        print(f"总耗时: {(datetime.now() - self.start_time).total_seconds():.1f}秒")
+        print(f"Batch evaluation completed!")
+        print(f"Success: {success_count}/{total_tests} ({success_count/total_tests*100:.1f}%)")
+        print(f"Total time: {(datetime.now() - self.start_time).total_seconds():.1f} seconds")
         print(f"{'='*60}")
         
         # 保存结果
@@ -229,33 +229,44 @@ class BatchEvaluator:
         self.generate_summary_report()
     
     def cleanup_output_dir(self):
-        """清理output目录以节省空间"""
+        """Clean up output directory to save space while preserving skinning weights"""
         try:
             output_dir = Path("output")
             if output_dir.exists():
                 import shutil
-                shutil.rmtree(output_dir)
+                # 遍历output目录下的每个pipeline目录
+                for pipeline_dir in output_dir.iterdir():
+                    if pipeline_dir.is_dir() and pipeline_dir.name.startswith("pipeline_"):
+                        # 保留skinning_weights目录，清理其他目录
+                        for item in pipeline_dir.iterdir():
+                            if item.is_dir() and item.name != "skinning_weights":
+                                print(f"Cleaning directory: {item}")
+                                shutil.rmtree(item)
+                            elif item.is_file():
+                                print(f"Cleaning file: {item}")
+                                item.unlink()
+                print("Output directory cleaned while preserving skinning weights")
         except Exception as e:
-            print(f"⚠️ 清理output目录失败: {e}")
+            print(f"Clean up output directory failed: {e}")
     
     def save_results(self):
-        """保存评估结果"""
-        # 保存详细结果到JSON
+        """Save evaluation results"""
+        # Save detailed results to JSON
         results_dir = Path("evaluation/results/batch_evaluation")
         results_dir.mkdir(exist_ok=True)
         
         timestamp = self.start_time.strftime("%Y%m%d_%H%M%S")
         
-        # 保存JSON格式的详细结果
+        # Save detailed results in JSON format
         json_file = results_dir / f"batch_results_{timestamp}.json"
         with open(json_file, 'w') as f:
             json.dump(self.results, f, indent=2)
-        print(f"✅ 详细结果已保存到: {json_file}")
+        print(f"Detailed results saved to: {json_file}")
         
-        # 保存CSV格式的汇总结果
+        # Save summary results in CSV format
         csv_file = results_dir / f"batch_summary_{timestamp}.csv"
         
-        # 准备CSV数据
+        # Prepare CSV data
         csv_data = []
         for result in self.results:
             csv_row = {
@@ -274,12 +285,12 @@ class BatchEvaluator:
         
         df = pd.DataFrame(csv_data)
         df.to_csv(csv_file, index=False)
-        print(f"✅ 汇总结果已保存到: {csv_file}")
+        print(f"Summary results saved to: {csv_file}")
         
         return json_file, csv_file
     
     def generate_summary_report(self):
-        """生成汇总报告"""
+        """Generate summary report"""
         if not self.results:
             return
         
@@ -288,36 +299,36 @@ class BatchEvaluator:
         report_file = results_dir / f"batch_report_{timestamp}.md"
         
         report = []
-        report.append(f"# DFAUST数据集批量评估报告\n\n")
-        report.append(f"**评估时间**: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        report.append(f"**总耗时**: {(datetime.now() - self.start_time).total_seconds():.1f}秒\n")
-        report.append(f"**总测试数**: {len(self.results)}\n\n")
+        report.append(f"# DFAUST data set batch evaluation report\n\n")
+        report.append(f"**Evaluation time**: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        report.append(f"**Total time**: {(datetime.now() - self.start_time).total_seconds():.1f} seconds\n")
+        report.append(f"**Total test number**: {len(self.results)}\n\n")
         
-        # 成功率统计
+        # Success rate statistics
         success_count = sum(1 for r in self.results if r['success'])
         success_rate = success_count / len(self.results) * 100
-        report.append(f"## 总体统计\n\n")
-        report.append(f"- **成功**: {success_count}/{len(self.results)} ({success_rate:.1f}%)\n")
-        report.append(f"- **失败**: {len(self.results) - success_count}/{len(self.results)} ({100-success_rate:.1f}%)\n")
+        report.append(f"## Overall statistics\n\n")
+        report.append(f"- **Success**: {success_count}/{len(self.results)} ({success_rate:.1f}%)\n")
+        report.append(f"- **Failure**: {len(self.results) - success_count}/{len(self.results)} ({100-success_rate:.1f}%)\n")
         
-        # 按HDF5文件统计
+        # Statistics by HDF5 file
         male_results = [r for r in self.results if 'registrations_m.hdf5' in r['hdf5_path']]
         female_results = [r for r in self.results if 'registrations_f.hdf5' in r['hdf5_path']]
         
         if male_results:
             male_success = sum(1 for r in male_results if r['success'])
             male_rate = male_success / len(male_results) * 100
-            report.append(f"- **男性数据**: {male_success}/{len(male_results)} ({male_rate:.1f}%)\n")
+            report.append(f"- **Male data**: {male_success}/{len(male_results)} ({male_rate:.1f}%)\n")
         
         if female_results:
             female_success = sum(1 for r in female_results if r['success'])
             female_rate = female_success / len(female_results) * 100
-            report.append(f"- **女性数据**: {female_success}/{len(female_results)} ({female_rate:.1f}%)\n")
+            report.append(f"- **Female data**: {female_success}/{len(female_results)} ({female_rate:.1f}%)\n")
         
-        # 按参数统计
-        report.append(f"\n## 参数组合统计\n\n")
+        # Statistics by parameters
+        report.append(f"\n## Parameter combination statistics\n\n")
         
-        # 按k值统计
+        # Statistics by k value
         k_stats = {}
         for result in self.results:
             k = result['k']
@@ -327,13 +338,13 @@ class BatchEvaluator:
             if result['success']:
                 k_stats[k]['success'] += 1
         
-        report.append("### 按k值统计\n\n")
+        report.append("### Statistics by k value\n\n")
         for k in sorted(k_stats.keys()):
             stats = k_stats[k]
             rate = stats['success'] / stats['total'] * 100
             report.append(f"- **k={k}**: {stats['success']}/{stats['total']} ({rate:.1f}%)\n")
         
-        # 按GT模式统计
+        # Statistics by GT mode
         gt_stats = {}
         for result in self.results:
             gt_mode = "no_gt" if result['no_gt'] else "with_gt"
@@ -343,28 +354,28 @@ class BatchEvaluator:
             if result['success']:
                 gt_stats[gt_mode]['success'] += 1
         
-        report.append("\n### 按GT模式统计\n\n")
+        report.append("\n### Statistics by GT mode\n\n")
         for mode, stats in gt_stats.items():
             rate = stats['success'] / stats['total'] * 100
-            mode_name = "无GT模式" if mode == "no_gt" else "有GT模式"
+            mode_name = "No GT mode" if mode == "no_gt" else "With GT mode"
             report.append(f"- **{mode_name}**: {stats['success']}/{stats['total']} ({rate:.1f}%)\n")
         
-        # 失败案例分析
+        # Failure case analysis
         failed_results = [r for r in self.results if not r['success']]
         if failed_results:
-            report.append(f"\n## 失败案例分析\n\n")
-            report.append(f"共有 {len(failed_results)} 个失败案例:\n\n")
+            report.append(f"\n## Failure case analysis\n\n")
+            report.append(f"There are {len(failed_results)} failure cases:\n\n")
             
-            for i, result in enumerate(failed_results[:10]):  # 只显示前10个
+            for i, result in enumerate(failed_results[:10]):  # Only show the first 10
                 report.append(f"{i+1}. **{result['subject_id']}_{result['sequence_id']}** ")
                 report.append(f"(k={result['k']}, max_pairs={result['max_pairs']}, no_gt={result['no_gt']})\n")
-                report.append(f"   - 返回码: {result['returncode']}\n")
-                report.append(f"   - 错误: {result['stderr'][:100]}...\n\n")
+                report.append(f"   - Return code: {result['returncode']}\n")
+                report.append(f"   - Error: {result['stderr'][:100]}...\n\n")
             
             if len(failed_results) > 10:
-                report.append(f"... 还有 {len(failed_results) - 10} 个失败案例\n\n")
+                report.append(f"... There are {len(failed_results) - 10} more failure cases\n\n")
         
-        # 性能统计
+        # Performance statistics
         successful_results = [r for r in self.results if r['success']]
         if successful_results:
             durations = [r['duration'] for r in successful_results]
@@ -372,62 +383,62 @@ class BatchEvaluator:
             max_duration = max(durations)
             min_duration = min(durations)
             
-            report.append(f"## 性能统计\n\n")
-            report.append(f"- **平均耗时**: {avg_duration:.1f}秒\n")
-            report.append(f"- **最大耗时**: {max_duration:.1f}秒\n")
-            report.append(f"- **最小耗时**: {min_duration:.1f}秒\n")
+            report.append(f"## Performance statistics\n\n")
+            report.append(f"- **Average duration**: {avg_duration:.1f} seconds\n")
+            report.append(f"- **Maximum duration**: {max_duration:.1f} seconds\n")
+            report.append(f"- **Minimum duration**: {min_duration:.1f} seconds\n")
         
-        # 保存报告
+        # Save report
         with open(report_file, 'w', encoding='utf-8') as f:
             f.writelines(report)
         
-        print(f"SUCCESS 评估报告已保存到: {report_file}")
+        print(f"SUCCESS Evaluation report saved to: {report_file}")
         
-        # 生成汇总可视化
+        # Generate summary visualizations
         self.generate_summary_visualizations(self.results, results_dir)
 
     def generate_summary_visualizations(self, results, output_dir):
-        """生成批量评估的汇总可视化"""
+        """Generate summary visualizations for batch evaluation"""
         try:
             import matplotlib.pyplot as plt
             import seaborn as sns
             
-            # 准备数据
+            # Prepare data
             successful_results = [r for r in results if r['success']]
             if not successful_results:
-                print("WARNING 没有成功的评估结果，跳过可视化")
+                print("WARNING No successful evaluation results, skip visualizations")
                 return
             
-            # 创建可视化目录
+            # Create visualization directory
             viz_dir = Path(output_dir) / "visualizations"
             viz_dir.mkdir(exist_ok=True)
             
-            # 1. 成功率统计图
+            # 1. Success rate statistics
             self.plot_success_rates(results, viz_dir)
             
-            # 2. 耗时分布图
+            # 2. Duration distribution
             self.plot_duration_distribution(successful_results, viz_dir)
             
-            # 3. 参数对比图
+            # 3. Parameter comparison
             self.plot_parameter_comparison(successful_results, viz_dir)
             
-            print(f"SUCCESS 汇总可视化已保存到: {viz_dir}")
+            print(f"SUCCESS Summary visualizations saved to: {viz_dir}")
             
         except Exception as e:
-            print(f"WARNING 生成可视化时出错: {e}")
+            print(f"WARNING Error generating visualizations: {e}")
 
     def plot_success_rates(self, results, output_dir):
-        """绘制成功率统计图"""
+        """Plot success rate statistics"""
         import matplotlib.pyplot as plt
         
-        # 按HDF5文件统计
+        # Statistics by HDF5 file
         m_results = [r for r in results if 'registrations_m.hdf5' in r.get('command', '')]
         f_results = [r for r in results if 'registrations_f.hdf5' in r.get('command', '')]
         
         m_success = len([r for r in m_results if r['success']])
         f_success = len([r for r in f_results if r['success']])
         
-        categories = ['男性数据\n(registrations_m)', '女性数据\n(registrations_f)', '总计']
+        categories = ['Male data\n(registrations_m)', 'Female data\n(registrations_f)', 'Total']
         success_counts = [m_success, f_success, len([r for r in results if r['success']])]
         total_counts = [len(m_results), len(f_results), len(results)]
         success_rates = [s/t*100 if t > 0 else 0 for s, t in zip(success_counts, total_counts)]
@@ -436,34 +447,34 @@ class BatchEvaluator:
         
         # 成功率柱状图
         bars = ax1.bar(categories, success_rates, color=['skyblue', 'lightcoral', 'lightgreen'])
-        ax1.set_ylabel('成功率 (%)')
-        ax1.set_title('批量评估成功率统计')
+        ax1.set_ylabel('Success rate (%)')
+        ax1.set_title('Batch evaluation success rate statistics')
         ax1.set_ylim(0, 105)
         
-        # 添加数值标签
+        # Add value labels
         for bar, rate, count, total in zip(bars, success_rates, success_counts, total_counts):
             ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
                     f'{rate:.1f}%\n({count}/{total})', 
                     ha='center', va='bottom')
         
-        # 成功/失败饼图
+        # Success/failure pie chart
         success_total = len([r for r in results if r['success']])
         fail_total = len(results) - success_total
         
         if fail_total > 0:
-            ax2.pie([success_total, fail_total], labels=['成功', '失败'], 
+            ax2.pie([success_total, fail_total], labels=['Success', 'Failure'], 
                    colors=['lightgreen', 'lightcoral'], autopct='%1.1f%%')
         else:
-            ax2.pie([success_total], labels=['成功'], colors=['lightgreen'], autopct='%1.1f%%')
+            ax2.pie([success_total], labels=['Success'], colors=['lightgreen'], autopct='%1.1f%%')
         
-        ax2.set_title('总体成功/失败比例')
+        ax2.set_title('Overall success/failure ratio')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'success_rates.png', dpi=300, bbox_inches='tight')
         plt.close()
 
     def plot_duration_distribution(self, results, output_dir):
-        """绘制耗时分布图"""
+        """Plot duration distribution"""
         import matplotlib.pyplot as plt
         
         durations = [r['duration'] for r in results if 'duration' in r]
@@ -472,34 +483,34 @@ class BatchEvaluator:
         
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
         
-        # 耗时直方图
+        # Duration histogram
         ax1.hist(durations, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
-        ax1.set_xlabel('耗时 (秒)')
-        ax1.set_ylabel('频次')
-        ax1.set_title('评估耗时分布')
-        ax1.axvline(np.mean(durations), color='red', linestyle='--', label=f'平均值: {np.mean(durations):.1f}秒')
+        ax1.set_xlabel('Duration (seconds)')
+        ax1.set_ylabel('Frequency')
+        ax1.set_title('Evaluation duration distribution')
+        ax1.axvline(np.mean(durations), color='red', linestyle='--', label=f'Average: {np.mean(durations):.1f} seconds')
         ax1.legend()
         
-        # 耗时箱线图
+        # Duration box plot
         ax2.boxplot(durations)
-        ax2.set_ylabel('耗时 (秒)')
-        ax2.set_title('耗时箱线图')
-        ax2.set_xticklabels(['所有测试'])
+        ax2.set_ylabel('Duration (seconds)')
+        ax2.set_title('Duration box plot')
+        ax2.set_xticklabels(['All tests'])
         
         plt.tight_layout()
         plt.savefig(output_dir / 'duration_distribution.png', dpi=300, bbox_inches='tight')
         plt.close()
 
     def plot_parameter_comparison(self, results, output_dir):
-        """绘制参数对比图"""
+        """Plot parameter comparison"""
         import matplotlib.pyplot as plt
         import re
         
-        # 解析参数
+        # Parse parameters
         param_data = []
         for r in results:
             cmd = r.get('command', '')
-            # 提取k值
+            # Extract k value
             k_match = re.search(r'--k (\d+)', cmd)
             max_pairs_match = re.search(r'--max_pairs (\d+)', cmd)
             no_gt_match = '--no_gt' in cmd
@@ -519,48 +530,48 @@ class BatchEvaluator:
         
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
         
-        # k值 vs 耗时
+        # k value vs duration
         k_groups = df.groupby('k')['duration'].mean()
         ax1.bar(k_groups.index, k_groups.values, color='lightblue')
-        ax1.set_xlabel('k值')
-        ax1.set_ylabel('平均耗时 (秒)')
-        ax1.set_title('k值对评估耗时的影响')
+        ax1.set_xlabel('k value')
+        ax1.set_ylabel('Average duration (seconds)')
+        ax1.set_title('k value vs evaluation duration')
         
-        # max_pairs vs 耗时
+        # max_pairs vs duration
         pairs_groups = df.groupby('max_pairs')['duration'].mean()
         ax2.bar(pairs_groups.index, pairs_groups.values, color='lightcoral')
         ax2.set_xlabel('max_pairs')
-        ax2.set_ylabel('平均耗时 (秒)')
-        ax2.set_title('max_pairs对评估耗时的影响')
+        ax2.set_ylabel('Average duration (seconds)')
+        ax2.set_title('max_pairs vs evaluation duration')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'parameter_comparison.png', dpi=300, bbox_inches='tight')
         plt.close()
 
 def main():
-    parser = argparse.ArgumentParser(description="DFAUST数据集批量评估")
+    parser = argparse.ArgumentParser(description="DFAUST data set batch evaluation")
     parser.add_argument("--python_path", type=str, 
                        default="C:\\Users\\sky\\miniconda3\\envs\\nmario\\python.exe",
-                       help="Python解释器路径")
+                       help="Python interpreter path")
     parser.add_argument("--test_mode", action="store_true",
-                       help="测试模式，仅运行少量测试用于验证")
+                       help="Test mode, only run a few tests for verification")
     parser.add_argument("--sequences", nargs="+", default=None,
-                       help="指定要测试的序列 (格式: subject_id:sequence_id)")
+                       help="Specify the sequences to test (format: subject_id:sequence_id)")
     parser.add_argument("--k_values", nargs="+", type=int, default=[10, 20],
-                       help="k值列表")
+                       help="k value list")
     parser.add_argument("--max_pairs", nargs="+", type=int, default=[1, 2],
-                       help="max_pairs值列表")
+                       help="max_pairs value list")
     parser.add_argument("--no_gt_only", action="store_true",
-                       help="仅运行无GT模式")
+                       help="Only run no GT mode")
     
     args = parser.parse_args()
     
     evaluator = BatchEvaluator(args.python_path)
     
     if args.sequences:
-        # 自定义序列评估
-        print("🎯 运行自定义序列评估")
-        # TODO: 实现自定义序列评估
+        # Custom sequence evaluation
+        print("🎯 Run custom sequence evaluation")
+        # TODO: Implement custom sequence evaluation
         pass
     else:
         # 运行全面评估

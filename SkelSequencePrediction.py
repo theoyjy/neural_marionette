@@ -117,8 +117,8 @@ class SequenceSkeletonPredictor:
         
         mesh_files = sorted(glob.glob(os.path.join(mesh_folder, file_pattern)))
         
-        if max_frames:
-            mesh_files = mesh_files[:max_frames]
+        # if max_frames:
+        #     mesh_files = mesh_files[:max_frames]
         
         if len(mesh_files) == 0:
             raise ValueError(f"No files matching {file_pattern} found in {mesh_folder}")
@@ -342,7 +342,7 @@ def main():
                        help="Input mesh folder path")
     parser.add_argument("--output_dir", type=str, default="output/skeleton_prediction", 
                        help="Output directory")
-    parser.add_argument("--max_frames", type=int, default=160, 
+    parser.add_argument("--max_frames", type=int, default=None, 
                        help="Maximum number of frames to process")
     parser.add_argument("--visualization", action="store_true", 
                        help="Enable visualization")
