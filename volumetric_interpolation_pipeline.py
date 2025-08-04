@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-Volumetric Video Interpolation Pipeline
+The main show: The Volumetric Video Interpolation Pipeline.
 
-Complete volumetric video interpolation pipeline including:
-1. Skeleton Prediction (SkelSequencePrediction.py)
-2. Interpolation Generation (Interpolate.py) - Supports multiple interpolation methods
-3. Skinning Weight Optimization (Skinning.py)
-4. Texture Processing (texture_utils.py) - Newly added texture support
+This thing handles the whole process from start to finish:
+1.  Predicting the skeleton (SkelSequencePrediction.py)
+2.  Generating the in-between frames (Interpolate.py) - we've got a few ways to do this.
+3.  Optimizing the skinning weights (Skinning.py)
+4.  Processing textures (texture_utils.py) - Yep, it handles textures now!
 
-Supported interpolation methods:
-- baseline: Basic interpolation method
-- dual_reference: Dual reference frame interpolation
-- adaptive_similarity: Adaptive similarity frame interpolation
+Available interpolation methods:
+- baseline: The simple, classic approach.
+- dual_reference: Uses two reference frames for a bit more smarts.
+- adaptive_similarity: An even fancier method using adaptive similarity.
 
-Usage:
+How to run it:
 python volumetric_interpolation_pipeline.py <folder_path> <start_frame> <end_frame> [num_interpolate] [--method] [--texture]
 """
 
@@ -25,17 +25,18 @@ import time
 import hashlib
 import json
 
-# Import texture processing module
+# Import our texture processing stuff.
 try:
     from texture_utils import VertexColorProcessor, integrate_vertex_color_processing
     VERTEX_COLOR_AVAILABLE = True
 except ImportError:
-    print("Warning: Vertex color processing module not available, will skip vertex color processing")
+    print("Warning: Couldn't find the vertex color processing module. We'll have to skip that part.")
     VERTEX_COLOR_AVAILABLE = False
 
 
 def check_dependencies():
-    print("Check Dependencies...")
+    """Let's see if we have all the Python packages we need."""
+    print("Checking our dependencies...")
     
     required_modules = [
         'torch', 'numpy', 'open3d', 'scipy', 'matplotlib', 
@@ -46,30 +47,30 @@ def check_dependencies():
     for module in required_modules:
         try:
             __import__(module)
-            print(f"{module}")
+            print(f"  - {module}... looks good.")
         except ImportError:
-            print(f"{module} - Missing")
+            print(f"  - {module}... MISSING!")
             missing_modules.append(module)
     
     if missing_modules:
-        print(f"\nMissing Dependencies: {missing_modules}")
-        print("Please install the missing dependencies and try again")
+        print(f"\nLooks like we're missing: {missing_modules}")
+        print("You'll need to install these before we can go on.")
         return False
     
-    print("All Dependencies Checked")
+    print("All dependencies are in place. Rock on.")
     return True
 
 def setup_paths(folder_path, method="baseline", start_frame=0, end_frame=0, num_interpolate=10, 
                 evaluation_mode=False, evaluation_output_dir=None):
-    """Set Output Paths"""
+    """Sets up all the directories where we'll save our output."""
     folder_path = Path(folder_path)
     
     if evaluation_mode and evaluation_output_dir:
-        # 评估模式：使用指定的输出目录
+        # For evaluation mode, we're told exactly where to put things.
         output_dir = Path(evaluation_output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # 子目录 - 统一的结构
+        # Subdirectories - keep 'em consistent.
         sequence_name = output_dir.parent.stem
         components = sequence_name.split('_')
         sub_seq_name = '_'.join(components[:-1])
@@ -83,46 +84,47 @@ def setup_paths(folder_path, method="baseline", start_frame=0, end_frame=0, num_
         skeleton_dir.mkdir(exist_ok=True)
         skinning_dir.mkdir(exist_ok=True)
         
-        # 插值结果目录 - 按方法区分
+        # Interpolation results get their own folder based on the method used.
         interpolation_dir = output_dir / f"{method}"
         interpolation_dir.mkdir(exist_ok=True)
         
-        print(f"Evaluation Mode Output Directory:")
-        print(f"Input Folder: {folder_path}")
-        print(f"Evaluation Output: {output_dir}")
-        print(f"Interpolation Method: {method}")
-        print(f"Interpolation Results: {interpolation_dir}")
+        print(f"Running in Evaluation Mode. Here's the plan:")
+        print(f"  - Input Folder: {folder_path}")
+        print(f"  - Evaluation Output: {output_dir}")
+        print(f"  - Interpolation Method: {method}")
+        print(f"  - Interpolation Results will be in: {interpolation_dir}")
         
     else:
-        # 标准模式：使用哈希目录
+        # In standard mode, we create a unique hashed directory to keep things clean.
         output_base = Path("output")
         output_base.mkdir(exist_ok=True)
         
-        # 使用稳定的哈希算法为每个输入文件夹创建唯一的输出目录
+        # Use a hash of the folder path to make a unique directory name.
         folder_str = str(folder_path.absolute())
-        folder_hash = hashlib.md5(folder_str.encode('utf-8')).hexdigest()[-8:]  # 使用MD5哈希的后8位
+        # Just grab the last 8 chars of the MD5 hash. Keeps it short.
+        folder_hash = hashlib.md5(folder_str.encode('utf-8')).hexdigest()[-8:]  
         output_dir = output_base / f"pipeline_{folder_path.name}_{folder_hash}"
         output_dir.mkdir(exist_ok=True)
         
-        # 子目录 - 统一的结构
+        # Subdirectories - a nice, consistent structure.
         skeleton_dir = output_dir / "skeleton_prediction"
         skinning_dir = output_dir / "skinning_weights"
         
         skeleton_dir.mkdir(exist_ok=True)
         skinning_dir.mkdir(exist_ok=True)
         
-        # 插值结果目录 - 按方法区分
+        # Interpolation results go into method-specific folders.
         interpolation_root_dir = output_dir / f"interpolation_{method}"
         interpolation_dir = interpolation_root_dir / f"{start_frame}_{end_frame}_{num_interpolate}"
         interpolation_root_dir.mkdir(exist_ok=True)
         interpolation_dir.mkdir(exist_ok=True)
         
-        print(f"Standard Mode Output Directory:")
-        print(f"Input Folder: {folder_path}")
-        print(f"Folder Hash: {folder_hash}")
-        print(f"Interpolation Method: {method}")
-        print(f"Output Directory: {output_dir}")
-        print(f"Interpolation Results: {interpolation_dir}")
+        print(f"Running in Standard Mode. Here's the plan:")
+        print(f"  - Input Folder: {folder_path}")
+        print(f"  - Folder Hash: {folder_hash}")
+        print(f"  - Interpolation Method: {method}")
+        print(f"  - Main Output Directory: {output_dir}")
+        print(f"  - Interpolation Results will be in: {interpolation_dir}")
     
     return {
         'base': output_dir,
@@ -132,25 +134,25 @@ def setup_paths(folder_path, method="baseline", start_frame=0, end_frame=0, num_
     }
 
 def step1_skeleton_prediction(folder_path, output_paths):
-    """Step 1: Skeleton Prediction"""
+    """Step 1: Time to figure out the skeleton from the mesh sequence."""
     print("\n" + "="*60)
     print("Step 1: Skeleton Prediction")
     print("="*60)
     
     step_start_time = time.time()
     
-    print(f"Start Skeleton Prediction...")
-    print(f"Input Folder: {folder_path}")
-    print(f"Output Directory: {output_paths['skeleton']}")
+    print(f"Starting skeleton prediction...")
+    print(f"  - Input Folder: {folder_path}")
+    print(f"  - Output will be saved to: {output_paths['skeleton']}")
     
-    # 检查是否已经存在骨骼预测结果
+    # Let's see if we've already done this work.
     skeleton_dir = output_paths['skeleton']
     keypoints_file = os.path.join(skeleton_dir, 'keypoints.npy')
     transforms_file = os.path.join(skeleton_dir, 'transforms.npy')
     parents_file = os.path.join(skeleton_dir, 'parents.npy')
     
     if os.path.exists(keypoints_file) and os.path.exists(transforms_file) and os.path.exists(parents_file):
-        print(f"SUCCESS Found existing skeleton prediction results, skipping prediction step")
+        print(f"Awesome! Found existing skeleton results, so we can skip this step.")
         print(f"  - Keypoints: {keypoints_file}")
         print(f"  - Transforms: {transforms_file}")
         print(f"  - Parents: {parents_file}")
@@ -159,7 +161,7 @@ def step1_skeleton_prediction(folder_path, output_paths):
     try:
         from SkelSequencePrediction import SequenceSkeletonPredictor
         
-        # 配置预训练模型路径
+        # Point to the pre-trained model files.
         exp_dir = 'pretrained/aist'
         checkpoint_path = os.path.join(exp_dir, 'aist_pretrained.pth')
         opt_path = os.path.join(exp_dir, 'opt.pickle')
@@ -169,18 +171,18 @@ def step1_skeleton_prediction(folder_path, output_paths):
             opt_path=opt_path
         )
         
-        # Load mesh sequence
+        # Load up the mesh sequence.
         print("Loading mesh sequence...")
         voxel_sequence, mesh_sequence, points_sequence = predictor.load_mesh_sequence(
             str(folder_path), file_pattern="*.obj", max_frames=None
         )
         
-        # Predict skeleton
+        # And now, predict the skeleton.
         prediction_start = time.time()
         results = predictor.predict_skeleton_sequence(voxel_sequence)
         prediction_time = time.time() - prediction_start
         
-        # Save results
+        # Save our hard-earned results.
         print("Saving skeleton prediction results...")
         predictor.save_skeleton_results(results, str(output_paths['skeleton']), points_sequence)
         
@@ -189,16 +191,16 @@ def step1_skeleton_prediction(folder_path, output_paths):
         if success:
             step_time = time.time() - step_start_time
             print(f"Skeleton Prediction Completed!")
-            print(f"  - Prediction Time: {prediction_time:.2f} seconds")
-            print(f"  - Step Total Time: {step_time:.2f} seconds")
-            print(f"  - Output Directory: {output_paths['skeleton']}")
+            print(f"  - Prediction took: {prediction_time:.2f} seconds")
+            print(f"  - Total for this step: {step_time:.2f} seconds")
+            print(f"  - Results are in: {output_paths['skeleton']}")
             return True
         else:
-            print("Skeleton Prediction Failed")
+            print("Skeleton Prediction Failed. Bummer.")
             return False
             
     except Exception as e:
-        print(f"Skeleton prediction failed: {e}")
+        print(f"Ouch, skeleton prediction failed: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -206,42 +208,42 @@ def step1_skeleton_prediction(folder_path, output_paths):
 def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, output_paths, evaluation_mode, method="baseline", 
                        save_standard_obj=False, save_npy_files=False):
     """
-    Step 2: Interpolation Generation
+    Step 2: Let's create those in-between frames!
     
     Args:
-        folder_path: Input folder path
-        start_frame: Start frame index (index in sorted file list, starting from 0)
-        end_frame: End frame index (index in sorted file list, starting from 0)
-        num_interpolate: Number of interpolated frames
-        output_paths: Output paths dictionary
-        method: Interpolation method
-        save_standard_obj: Whether to save standard obj files (avoid duplication)
-        save_npy_files: Whether to save npy files (usually not needed)
+        folder_path: Where the input meshes are.
+        start_frame: The index of the first frame.
+        end_frame: The index of the last frame.
+        num_interpolate: How many frames to create in between.
+        output_paths: The dictionary of paths we set up earlier.
+        method: Which interpolation method to use.
+        save_standard_obj: Should we save standard obj files? (can create duplicates).
+        save_npy_files: Should we save the npy files? (usually not necessary).
     """
     print("\n" + "="*60)
-    print(f"Step 2: Interpolation Generation ({method})")
+    print(f"Step 2: Generating Interpolated Frames ({method})")
     print("Vertex Color Processing: Enabled")
     print("="*60)
     
     step_start_time = time.time()
     
-    print(f"Start Interpolation Generation...")
-    print(f"Input Folder: {folder_path}")
-    print(f"Start Frame Index: {start_frame}")
-    print(f"End Frame Index: {end_frame}")
-    print(f"Number of Interpolated Frames: {num_interpolate}")
-    print(f"Interpolation Method: {method}")
-    print(f"Output Directory: {output_paths['interpolation']}")
-    print(f"Weights Directory: {output_paths['skinning']}")
+    print(f"Starting interpolation generation...")
+    print(f"  - Input Folder: {folder_path}")
+    print(f"  - Start Frame: {start_frame}")
+    print(f"  - End Frame: {end_frame}")
+    print(f"  - Frames to create: {num_interpolate}")
+    print(f"  - Method: {method}")
+    print(f"  - Output will be saved to: {output_paths['interpolation']}")
+    print(f"  - Weights will be read from: {output_paths['skinning']}")
     
     try:
-        # Initialize vertex color processor
+        # Get the vertex color processor ready.
         vertex_color_processor = None
         if VERTEX_COLOR_AVAILABLE:
             print(f"Initializing vertex color processor...")
             vertex_color_processor = VertexColorProcessor(str(folder_path))
         
-        # select interpolator based on method
+        # Pick the right interpolator for the job.
         if method == "baseline":
             from Interpolate import VolumetricInterpolator
             interpolator = VolumetricInterpolator(
@@ -257,21 +259,21 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
                 weights_path=output_paths['skinning']
             )
         else:
-            raise ValueError(f"Unsupported interpolation method: {method}")
+            raise ValueError(f"Don't know this interpolation method: {method}")
         
-        # set output directory for interpolator
+        # Tell the interpolator where to save everything.
         interpolator.output_dir = str(output_paths['base'])
         
-        print(f"  - Interpolator Type: {type(interpolator).__name__}")
-        print(f"  - Interpolator Output Directory: {interpolator.output_dir}")
+        print(f"  - Using Interpolator: {type(interpolator).__name__}")
+        print(f"  - Interpolator's base output directory: {interpolator.output_dir}")
         
-        # Integrate vertex color processing (if enabled)
+        # If vertex coloring is on, let's hook it into the interpolator.
         print(f"Evaluation Mode: {evaluation_mode}")
         if vertex_color_processor is not None and not evaluation_mode:
-            print(f"Integrating vertex color processing into interpolator...")
+            print(f"Integrating vertex color processing into the interpolator...")
             integrate_vertex_color_processing(interpolator, str(folder_path))
         
-        # generate interpolated frames
+        # Let's make some new frames!
         generation_start = time.time()
 
         interpolated_frames = interpolator.generate_interpolated_frames(
@@ -288,69 +290,74 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
         generation_time = time.time() - generation_start
         
         if not interpolated_frames:
-            print("No interpolated frames generated")
+            print("Hmm, no interpolated frames were generated.")
             return False
         
         step_time = time.time() - step_start_time
         print(f"Interpolation Generation Completed!")
-        print(f"  - Number of Generated Frames: {len(interpolated_frames)}")
-        print(f"  - Interpolation Generation Time: {generation_time:.2f} seconds")
-        print(f"  - Step Total Time: {step_time:.2f} seconds")
-        print(f"  - Output Directory: {output_paths['interpolation']}")
+        print(f"  - Generated {len(interpolated_frames)} new frames.")
+        print(f"  - Generation took: {generation_time:.2f} seconds")
+        print(f"  - Total for this step: {step_time:.2f} seconds")
+        print(f"  - Results are in: {output_paths['interpolation']}")
         
-        # 统计纹理处理结果
+        # Let's see how the vertex color processing went.
         if vertex_color_processor is not None:
             vertex_color_success_count = sum(1 for frame in interpolated_frames if frame.get('success', False))
-            print(f"  - Vertex Color Processing: {vertex_color_success_count}/{len(interpolated_frames)} frames processed successfully")
+            print(f"  - Vertex Color Processing: {vertex_color_success_count}/{len(interpolated_frames)} frames were processed successfully.")
         
         return True
         
     except Exception as e:
-        print(f"Interpolation generation failed: {e}")
+        print(f"Yikes, interpolation generation failed: {e}")
         import traceback
         traceback.print_exc()
         return False
 
 def generate_skinning_weights_path(start_frame, end_frame, step=1):
-    """Generate skinning weights file path"""
+    """A little helper to create a file path for the skinning weights."""
     return f"skinning_weights_ref{start_frame}_opt{start_frame}-{end_frame}_step{step}.npz"
 
 def main():
-    parser = argparse.ArgumentParser(description="Volumetric Video Interpolation Pipeline")
-    parser.add_argument("folder_path", help="Mesh Sequence Folder Path")
-    parser.add_argument("start_frame", type=int, help="Start Frame Index (index in sorted file list, starting from 0)")
-    parser.add_argument("end_frame", type=int, help="End Frame Index (index in sorted file list, starting from 0)")
-    parser.add_argument("--num_interpolate", type=int, default=10, help="Number of Interpolated Frames (Default: 10)")
+    parser = argparse.ArgumentParser(description="A pipeline for volumetric video interpolation.")
+    parser.add_argument("folder_path", help="Path to the folder with the mesh sequence.")
+    parser.add_argument("start_frame", type=int, help="Index of the start frame (1-based).")
+    parser.add_argument("end_frame", type=int, help="Index of the end frame (1-based).")
+    parser.add_argument("--num_interpolate", type=int, default=10, help="How many frames to create in between (default: 10).")
     parser.add_argument("--method", choices=["baseline", "dual_reference"], 
-                       default="baseline", help="Interpolation Method (Default: baseline)") 
-    parser.add_argument("--skip-skinning", action="store_true", help="Skip skinning weights optimization")
-    parser.add_argument("--result_path", help="Results Info Saved Once Interpolation Finished")
-    parser.add_argument("--evaluation-mode", action="store_true", help="Enable evaluation mode with unified output directory")
-    parser.add_argument("--evaluation-output-dir", help="Output directory for evaluation mode (required when --evaluation-mode is used)")
+                       default="baseline", help="Which interpolation method to use (default: baseline).") 
+    parser.add_argument("--skip-skinning", action="store_true", help="Skip the skinning weights optimization step.")
+    parser.add_argument("--result_path", help="File path to save info about the results when we're done.")
+    parser.add_argument("--evaluation-mode", action="store_true", help="Run in evaluation mode with a consistent output directory.")
+    parser.add_argument("--evaluation-output-dir", help="The output directory for evaluation mode (you need this if you use --evaluation-mode).")
 
     args = parser.parse_args()
     
     print("="*60)
-    print("Volumetric Video Interpolation Pipeline")
+    print("Kicking off the Volumetric Video Interpolation Pipeline")
     print("="*60)
     
-    # Check dependencies
+    # First, let's make sure we have everything we need.
     if not check_dependencies():
         return
     
-    # Check vertex color processing availability
+    # Make sure vertex color processing is available.
     if not VERTEX_COLOR_AVAILABLE:
-        print("Error: Vertex color processing not available, please check dependencies")
+        print("Error: Vertex color processing isn't available. Check your dependencies.")
         return
 
     # VERTEX_COLOR_AVAILABLE = False
     
-    # Validate evaluation mode parameters
+    # If in evaluation mode, we need the output directory.
     if args.evaluation_mode and not args.evaluation_output_dir:
-        print("Error: Evaluation mode requires --evaluation-output-dir parameter")
+        print("Error: When in evaluation mode, you have to tell me where to put the output with --evaluation-output-dir.")
         return
+
+    # Adjust frame indices to be 0-based. This is a common source of confusion.
+    # The user provides 1-based frame numbers, but the code uses 0-based indices.
+    start_frame_0_based = args.start_frame - 1 if args.start_frame > 0 else 0
+    end_frame_0_based = args.end_frame - 1 if args.end_frame > 0 else -1
     
-    # 设置输出路径
+    # Set up all our output paths.
     output_paths = setup_paths(
         args.folder_path, 
         args.method, 
@@ -363,40 +370,40 @@ def main():
     
     total_start_time = time.time()
     
-    # Step 1: Skeleton Prediction
+    # Step 1: Predict the skeleton.
     if not step1_skeleton_prediction(args.folder_path, output_paths):
-        print("Skeleton Prediction failed, exiting...")
+        print("Skeleton Prediction failed, so we have to stop here.")
         return
     
-    # Step 2: Interpolation Generation
-    print(f"\nStarting interpolation generation...")
-    print(f"Input folder: {args.folder_path}")
-    print(f"Start frame index: {args.start_frame} (index in sorted file list, starting from 0)")
-    print(f"End frame index: {args.end_frame} (index in sorted file list, starting from 0)")
-    print(f"Interpolation frames: {args.num_interpolate}")
-    print(f"Interpolation method: {args.method}")
+    # Step 2: Generate the interpolated frames.
+    print(f"\nAlright, let's get to interpolating...")
+    print(f"  - Input folder: {args.folder_path}")
+    print(f"  - Start frame index: {args.start_frame}")
+    print(f"  - End frame index: {args.end_frame}")
+    print(f"  - Frames to interpolate: {args.num_interpolate}")
+    print(f"  - Interpolation method: {args.method}")
     
     if not step2_interpolation(
         args.folder_path, 
-        args.start_frame, 
-        args.end_frame, 
+        start_frame_0_based, 
+        end_frame_0_based, 
         args.num_interpolate, 
         output_paths, 
         args.evaluation_mode,
         args.method,
         args.evaluation_mode
     ):
-        print("Interpolation generation failed, exiting...")
+        print("Interpolation generation failed, so that's all for now.")
         return
     
     total_time = time.time() - total_start_time
     
     print("\n" + "="*60)
-    print("Pipeline Completed Successfully!")
+    print("Pipeline finished successfully! High fives all around.")
     print("="*60)
-    print(f"Total Time: {total_time:.2f} seconds")
-    print(f"Output Directory: {output_paths['base']}")
-    print(f"Interpolation Results: {output_paths['interpolation']}")
+    print(f"Total time: {total_time:.2f} seconds")
+    print(f"Base Output Directory: {output_paths['base']}")
+    print(f"Interpolated frames are in: {output_paths['interpolation']}")
     
     if args.result_path:
         interpolation_dir = os.path.abspath(output_paths['interpolation'])
@@ -418,7 +425,7 @@ def main():
         with open(args.result_path, 'w') as f:
             json.dump(results, f, indent=4)
             
-        print(f"Results info saved to: {args.result_path}: {results}")
+        print(f"Saved the results info to: {args.result_path}")
 
 if __name__ == "__main__":
-    main() 
+    main()
