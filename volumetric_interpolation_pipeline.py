@@ -235,6 +235,7 @@ def step2_interpolation(folder_path, start_frame, end_frame, num_interpolate, ou
     print(f"  - Method: {method}")
     print(f"  - Output will be saved to: {output_paths['interpolation']}")
     print(f"  - Weights will be read from: {output_paths['skinning']}")
+    print(f"  - Save Standard Obj: {save_standard_obj}")
     
     try:
         # Get the vertex color processor ready.

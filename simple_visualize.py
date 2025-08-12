@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
 简单LBS重建可视化脚本
-
-快速可视化原始mesh和重建mesh的对比
 """
-
 import numpy as np
 from pathlib import Path
 import sys
 import time
+import open3d as o3d
+from copy import deepcopy
 
 def quick_visualize_frame(frame_idx=10):
     """快速可视化单帧重建结果"""
@@ -349,37 +348,226 @@ def simple_error_plot(frame_idx=10):
     plt.tight_layout()
     plt.show()
 
+def drawCone2(bottom_center, top_position, color=[0.6, 0.9, 0.6]):
+    cone = o3d.geometry.TriangleMesh.create_cone(0.025,
+                                                 height=np.linalg.norm(top_position - bottom_center) * 0.2 + 1e-6,
+                                                 resolution=20)
+    cone = cone.rotate(cone.get_rotation_matrix_from_xyz((np.pi, 0, 0)))
+    line1 = np.array([0.0, 0.0, 1.0])
+    line2 = (top_position - bottom_center) / (np.linalg.norm(top_position - bottom_center) + 1e-6)
+    v = np.cross(line1, line2)
+    c = np.dot(line1, line2) + 1e-8
+    k = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    R = np.eye(3) + k + np.matmul(k, k) * (1 / (1 + c))
+    if np.abs(c + 1.0) < 1e-4:
+        R = np.array([[-1, 0, 0], [0, 1, 0], [0, 0, -1]])
+
+    margin = np.linalg.norm(top_position - bottom_center) * 0.195
+    T = bottom_center + margin * line2
+
+    cone.transform(
+        np.concatenate((np.concatenate((R, T[:, np.newaxis]), axis=1), np.array([[0.0, 0.0, 0.0, 1.0]])), axis=0))
+    cone.paint_uniform_color(color)
+    cone.compute_vertex_normals()
+    return cone
+
+def drawCone1(bottom_center, top_position, color=[0.6, 0.9, 0.6]):
+    cone = o3d.geometry.TriangleMesh.create_cone(radius=0.025, height=np.linalg.norm(top_position - bottom_center)*0.8+1e-6, resolution=20)
+    line1 = np.array([0.0, 0.0, 1.0])
+    line2 = (top_position - bottom_center) / (np.linalg.norm(top_position - bottom_center)+1e-6)
+    v = np.cross(line1, line2)
+    c = np.dot(line1, line2) + 1e-8
+    k = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    R = np.eye(3) + k + np.matmul(k, k) * (1 / (1 + c))
+    if np.abs(c + 1.0) < 1e-4:
+        R = np.array([[-1, 0, 0], [0, 1, 0], [0, 0, -1]])
+    margin = np.linalg.norm(top_position - bottom_center) * 0.2
+    T = bottom_center + margin * line2
+    cone.transform(np.concatenate((np.concatenate((R, T[:, np.newaxis]), axis=1), np.array([[0.0, 0.0, 0.0, 1.0]])), axis=0))
+    cone.paint_uniform_color(color)
+    cone.compute_vertex_normals()
+    return cone
+
+def drawSphere(center, color=[0.6, 0.9, 0.6], radius=0.025):
+    sphere = o3d.geometry.TriangleMesh.create_sphere(radius)
+    sphere.translate(center)
+    sphere.paint_uniform_color(color)
+    sphere.compute_vertex_normals()
+    return sphere
+
+def visualize_skinning_weights_on_mesh_with_skeleton(
+    frame_idx=3, 
+    subdivide_iter=0
+):
+    """在单帧mesh上可视化蒙皮权重，并叠加骨骼。"""
+    try:
+        from Skinning import AutoSkinning
+    except ImportError as e:
+        print(f"导入 Skinning 失败: {e}")
+        return
+
+
+
+    # --- 1. 数据加载 ---
+    weights_filename="D:/Code/neural_marionette/output/pipeline_Rafa_Approves_hd_4k_8522ed0a/skinning_weights/ref65_opt63-67_num5.npz"
+    skeleton_data_dir = "D:/Code/neural_marionette/output/pipeline_Rafa_Approves_hd_4k_8522ed0a/skeleton_prediction"
+    mesh_folder_path = "D:/Code/VVEditor/Rafa_Approves_hd_4k"
+    reference_frame = 65
+    frame_idx = reference_frame
+
+    print(f"🎨 可视化蒙皮权重于帧 {frame_idx}")
+    print(f"   - 权重文件: {weights_filename}")
+    print("=" * 40)
+
+    canonicalizer = AutoSkinning(
+        skeleton_data_dir=skeleton_data_dir,
+        reference_frame_idx=reference_frame
+    )
+    canonicalizer.load_mesh_sequence(mesh_folder_path)
+
+    if not canonicalizer.load_skinning_weights(weights_filename):
+        print(f"错误: 无法加载权重文件 '{weights_filename}'")
+        return
+        
+    if frame_idx >= len(canonicalizer.mesh_files) or frame_idx >= len(canonicalizer.keypoints):
+        print(f"错误: 帧索引 {frame_idx} 超出范围。")
+        return
+        
+    # --- 2. 坐标系对齐与归一化 (最终正确逻辑) ---
+    mesh = o3d.io.read_triangle_mesh(str(canonicalizer.mesh_files[frame_idx]))
+    
+    # 2.1. 加载原始数据
+    original_vertices = np.asarray(mesh.vertices)
+    original_keypoints = canonicalizer.keypoints[frame_idx, :, :3]
+    
+    # 2.2. 计算归一化参数并处理数据
+    norm_params = canonicalizer.compute_mesh_normalization_params(mesh)
+    
+    # 对齐坐标系：在归一化后对骨骼进行坐标系对齐
+    vertices_norm = canonicalizer.normalize_mesh_vertices(original_vertices, norm_params)
+    # 骨骼: 已经在归一化空间中，但需要坐标系对齐（Y和Z轴翻转）
+    keypoints_norm = np.stack([original_keypoints[:, 0], -original_keypoints[:, 1], -original_keypoints[:, 2]], axis=-1)
+    vertices_norm = np.stack([vertices_norm[:, 0], -vertices_norm[:, 1], -vertices_norm[:, 2]], axis=-1)
+
+
+    # --- 3. 可视化逻辑 ---
+    skinning_weights = canonicalizer.skinning_weights
+    parents = canonicalizer.parents
+    num_joints = canonicalizer.num_joints
+    
+    np.random.seed(10000)
+    joint_colors = np.random.rand(num_joints, 3)
+
+    vertex_colors = np.einsum('nk,ki->ni', skinning_weights, joint_colors)
+    
+    skinned_mesh = o3d.geometry.TriangleMesh()
+    skinned_mesh.vertices = o3d.utility.Vector3dVector(vertices_norm)
+    skinned_mesh.triangles = mesh.triangles
+    skinned_mesh.vertex_colors = o3d.utility.Vector3dVector(vertex_colors)
+    skinned_mesh.compute_vertex_normals()
+
+    if subdivide_iter > 0:
+        skinned_mesh = skinned_mesh.subdivide_loop(subdivide_iter)
+        skinned_mesh.compute_vertex_normals()
+
+    skeleton_geometries = []
+    for k in range(num_joints):
+        skeleton_geometries.append(drawSphere(keypoints_norm[k], joint_colors[k], radius=0.025))
+        parent_idx = parents[k]
+        if k != parent_idx:
+            parent_pos = keypoints_norm[parent_idx]
+            child_pos = keypoints_norm[k]
+            skeleton_geometries.append(drawCone1(parent_pos, child_pos, color=[0, 0.8, 0.2]))
+            skeleton_geometries.append(drawCone2(parent_pos, child_pos, color=[0, 0.8, 0.2]))
+
+    # --- 4. 分层渲染与合成 (模仿vis_retarget.py) ---
+    width, height = 1280, 960
+    
+    # 4.1. 渲染模型
+    vis_mesh = o3d.visualization.Visualizer()
+    vis_mesh.create_window(f"Mesh Renderer", width=width, height=height, visible=False)
+    vis_mesh.add_geometry(skinned_mesh)
+    ctr = vis_mesh.get_view_control()
+    ctr.set_front([0, 0, -1])
+    ctr.set_lookat(np.mean(vertices_norm, axis=0))
+    ctr.set_up([0, -1, 0])
+    ctr.set_zoom(0.8)
+    # 保存相机参数，以便骨骼渲染器使用
+    cam_params = ctr.convert_to_pinhole_camera_parameters()
+    mesh_img = vis_mesh.capture_screen_float_buffer(True)
+    vis_mesh.destroy_window()
+
+    # 4.2. 渲染骨骼
+    vis_skel = o3d.visualization.Visualizer()
+    vis_skel.create_window(f"Skeleton Renderer", width=width, height=height, visible=False)
+    for geom in skeleton_geometries:
+        vis_skel.add_geometry(geom)
+    ctr_skel = vis_skel.get_view_control()
+    # 应用与模型渲染器完全相同的相机参数
+    ctr_skel.convert_from_pinhole_camera_parameters(cam_params)
+    skel_img = vis_skel.capture_screen_float_buffer(True)
+    vis_skel.destroy_window()
+
+    # 4.3. 合成图像
+    mesh_img_np = np.asarray(mesh_img)
+    skel_img_np = np.asarray(skel_img)
+
+    # 创建一个蒙版，找到骨骼图像中所有不是纯白色的像素
+    # (纯白像素的RGB值加起来等于3.0)
+    mask = skel_img_np.sum(axis=-1) < 2.99
+    
+    # 将骨骼像素"贴"到模型图像上
+    mesh_img_np[mask] = skel_img_np[mask]
+    
+    # 转换并保存最终图像
+    final_img_uint8 = (mesh_img_np * 255).astype(np.uint8)
+    
+    output_dir = Path("D:/Code/neural_marionette/evaluation/interpolation/registrations_m/50002_one_leg_jump/skinning_visualization")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    weights_name = Path(weights_filename).stem
+    output_filename = f"frame_{frame_idx:04d}_{weights_name}_overlay.png"
+    output_path = output_dir / output_filename
+    
+    # 使用Open3D的图像写入功能，它能正确处理RGB图像
+    o3d.io.write_image(str(output_path), o3d.geometry.Image(final_img_uint8), 9)
+
+    print(f"✅ 可视化结果已保存到: {output_path}")
+
+
 if __name__ == "__main__":
-    print("🎨 LBS重建可视化工具")
+    print("LBS重建可视化工具")
     print("=" * 30)
     
-    if len(sys.argv) > 1:
-        try:
-            frame_idx = int(sys.argv[1])
-            print(f"可视化帧: {frame_idx}")
-            quick_visualize_frame(frame_idx)
-        except ValueError:
-            if sys.argv[1] == "export":
-                batch_export_meshes()
-            elif sys.argv[1] == "plot":
-                frame_idx = int(sys.argv[2]) if len(sys.argv) > 2 else 10
-                simple_error_plot(frame_idx)
-            else:
-                print("用法: python simple_visualize.py [frame_number|export|plot]")
-    else:
-        print("选择操作:")
-        print("1. 可视化单帧 (输入帧号)")
-        print("2. 批量导出 (输入 'export')")
-        print("3. 误差图表 (输入 'plot')")
+    visualize_skinning_weights_on_mesh_with_skeleton()
+    # return
+
+    # if len(sys.argv) > 1:
+    #     try:
+    #         frame_idx = int(sys.argv[1])
+    #         print(f"可视化帧: {frame_idx}")
+    #         quick_visualize_frame(frame_idx)
+    #     except ValueError:
+    #         if sys.argv[1] == "export":
+    #             batch_export_meshes()
+    #         elif sys.argv[1] == "plot":
+    #             frame_idx = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+    #             simple_error_plot(frame_idx)
+    #         else:
+    #             print("用法: python simple_visualize.py [frame_number|export|plot]")
+    # else:
+    #     print("选择操作:")
+    #     print("1. 可视化单帧 (输入帧号)")
+    #     print("2. 批量导出 (输入 'export')")
+    #     print("3. 误差图表 (输入 'plot')")
         
-        choice = input("请选择 (1-3 或帧号): ").strip()
+    #     choice = input("请选择 (1-3 或帧号): ").strip()
         
-        if choice == "export":
-            batch_export_meshes()
-        elif choice == "plot":
-            simple_error_plot()
-        elif choice.isdigit():
-            quick_visualize_frame(int(choice))
-        else:
-            print("使用默认帧10进行可视化")
-            quick_visualize_frame(10)
+    #     if choice == "export":
+    #         batch_export_meshes()
+    #     elif choice == "plot":
+    #         simple_error_plot()
+    #     elif choice.isdigit():
+    #         quick_visualize_frame(int(choice))
+    #     else:
+    #         print("使用默认帧10进行可视化")
+    #         quick_visualize_frame(10)

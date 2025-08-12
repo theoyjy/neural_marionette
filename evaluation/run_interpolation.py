@@ -72,7 +72,7 @@ def run_interpolation_for_pair(pair_info_path, method, output_dir, database_name
     # 计算需要插值的帧数，为了节约时间，限制为最多5个中间帧
     # 原本应该是 k-1 个中间帧，现在改为 min(k-1, 5)
     k_frames = end_idx - start_idx - 1  # 实际的k-1个中间帧
-    num_interpolate = min(k_frames, 5)  # 限制最多5个
+    num_interpolate = min(k_frames, 4)  # 限制最多5个
     print(f"  Detected frame indices: start={start_idx}, end={end_idx}")
     print(f"  Originally needed to interpolate frames: {k_frames}, actually used: {num_interpolate}")
     print(f"  Optimized frame indices: {gt_frame_indices}")

@@ -69,10 +69,10 @@ def extract_keyframe_pairs(vertices, faces, joints, parents, k=10, max_pairs=Non
     keyframe_pairs = []
     
     #pick max_pairs frames from start_range
-    start_range = random.sample(list(range(0, T - k, 1)), max_pairs)
+    start_range = random.sample(list(range(0, T - k + 1, 1)), max_pairs)
 
     for start_idx in start_range:
-        end_idx = start_idx + k
+        end_idx = start_idx + k - 1
         
         # 如果指定了max_pairs且已经生成了足够的pairs，则停止
         if max_pairs is not None and len(keyframe_pairs) >= max_pairs:

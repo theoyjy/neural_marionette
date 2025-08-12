@@ -706,10 +706,11 @@ class VolumetricInterpolator:
         print(f"  - Frame generation time: {frame_generation_time:.2f} seconds")
         print(f"  - Average per frame: {frame_generation_time/len(t_values):.3f} seconds")
         print(f"  - Total time: {total_time:.2f} seconds")
-        
+
         return interpolated_frames
     
-    def generate_single_interpolated_frame(self, frame_start, frame_end, t, interpolated_transforms, output_dir, frame_idx, smooth_mesh=False, subdivide_iter=3, save_npy_files=False, save_standard_obj=True):
+    def generate_single_interpolated_frame(self, frame_start, frame_end, t, interpolated_transforms, output_dir, 
+    frame_idx, smooth_mesh=False, subdivide_iter=3, save_npy_files=False, save_standard_obj=True):
         """
         Generate a single interpolated frame - restore to the simple correct logic of the Work version
         
@@ -918,8 +919,11 @@ class VolumetricInterpolator:
             'vertices': transformed_vertices
         }
         
+        skeleton_dir = Path(output_dir) / f"Skeletons"
+        skeleton_dir.mkdir(parents=True, exist_ok=True)
+        self.visualize_skeleton_with_mesh(frame_data, skeleton_dir, frame_idx)
         # Save to file (if needed)
-        if output_dir:
+        if output_dir and save_standard_obj:
             mesh_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}.obj"
             
             print(f"  - Output path: {mesh_output_path}")
@@ -936,7 +940,7 @@ class VolumetricInterpolator:
                     print(f"  - Mesh file saved successfully: {mesh_output_path}")
                 else:
                     print(f"  - Mesh file saved failed: {mesh_output_path}")
-                
+
                 # Save transform data
                 # transform_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}_transforms.npy"
                 # np.save(transform_output_path, interpolated_transforms)
@@ -1037,7 +1041,7 @@ class VolumetricInterpolator:
         }
         
         # 保存到文件（如果需要）
-        if output_dir:
+        if output_dir and save_standard_obj:
             # Save standard obj file (if needed)
             if save_standard_obj:
                 mesh_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}.obj"
@@ -1081,6 +1085,7 @@ class VolumetricInterpolator:
             output_path: 输出路径（可选）
             frame_idx: 帧索引（用于文件名）
         """
+        print(f"Visualizing frame skeleton {frame_idx}")
         try:
             import open3d as o3d
             
@@ -1088,15 +1093,27 @@ class VolumetricInterpolator:
             vis = o3d.visualization.Visualizer()
             vis.create_window(width=1200, height=800, visible=False)
             
-            # 添加网格
-            mesh = frame_data['mesh']
-            mesh.paint_uniform_color([0.7, 0.7, 0.7])  # 灰色
-            vis.add_geometry(mesh)
+            # 检查是否有网格数据
+            if 'mesh' not in frame_data:
+                print(f"Warning: No mesh data found in frame_data. Available keys: {list(frame_data.keys())}")
+                vis.destroy_window()
+                return
             
-            # 获取网格顶点以确定坐标系
+            # # 添加网格
+            mesh = frame_data['mesh']
+            # mesh.paint_uniform_color([0.7, 0.7, 0.7])  # 灰色
+            # vis.add_geometry(mesh)
+            
+            # # 获取网格顶点以确定坐标系
             mesh_vertices = np.asarray(mesh.vertices)
             mesh_center = np.mean(mesh_vertices, axis=0)
             mesh_scale = np.max(mesh_vertices, axis=0) - np.min(mesh_vertices, axis=0)
+            
+            # # 检查是否有骨骼数据
+            if 'transforms' not in frame_data or 'keypoints' not in frame_data:
+                print(f"Warning: Missing skeleton data. Available keys: {list(frame_data.keys())}")
+                vis.destroy_window()
+                return
             
             # 添加骨骼
             transforms = frame_data['transforms']
@@ -1148,30 +1165,54 @@ class VolumetricInterpolator:
                         if parent_confidence > 0.2:
                             parent_pos = transforms[parent_idx][:3, 3]
                             
-                            # 创建连接线
-                            line_points = [parent_pos, joint_pos]
-                            lines = [[0, 1]]
-                            line_set = o3d.geometry.LineSet()
-                            line_set.points = o3d.utility.Vector3dVector(line_points)
-                            line_set.lines = o3d.utility.Vector2iVector(lines)
-                            line_set.paint_uniform_color([0, 1, 0])  # 绿色骨骼
-                            vis.add_geometry(line_set)
+                            # 创建连接线（使用圆柱体模拟粗线条，可控制粗细）
+                            direction = joint_pos - parent_pos
+                            length = np.linalg.norm(direction)
+                            if length > 1e-6:  # 避免除零
+                                # 创建圆柱体作为骨骼连接
+                                bone_radius = 0.008  # 可调整线条粗细
+                                cylinder = o3d.geometry.TriangleMesh.create_cylinder(
+                                    radius=bone_radius,
+                                    height=length
+                                )
+                                # 计算旋转矩阵，使圆柱体指向正确方向
+                                direction_normalized = direction / length
+                                z_axis = np.array([0, 0, 1])
+                                
+                                # 计算旋转轴和角度
+                                if np.allclose(direction_normalized, z_axis):
+                                    rotation_matrix = np.eye(3)
+                                elif np.allclose(direction_normalized, -z_axis):
+                                    rotation_matrix = np.array([[-1, 0, 0], [0, -1, 0], [0, 0, -1]])
+                                else:
+                                    rotation_axis = np.cross(z_axis, direction_normalized)
+                                    rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+                                    cos_angle = np.dot(z_axis, direction_normalized)
+                                    angle = np.arccos(np.clip(cos_angle, -1, 1))
+                                    
+                                    # 使用Rodrigues公式计算旋转矩阵
+                                    K = np.array([[0, -rotation_axis[2], rotation_axis[1]],
+                                                [rotation_axis[2], 0, -rotation_axis[0]],
+                                                [-rotation_axis[1], rotation_axis[0], 0]])
+                                    rotation_matrix = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * np.dot(K, K)
+                                
+                                # 应用变换
+                                cylinder.rotate(rotation_matrix, center=[0, 0, 0])
+                                cylinder.translate((parent_pos + joint_pos) / 2)  # 移动到中点
+                                cylinder.paint_uniform_color([0, 1, 0])  # 绿色骨骼
+                                vis.add_geometry(cylinder)
             
             # 设置视角
             vis.get_render_option().point_size = 2.0
-            vis.get_render_option().line_width = 3.0
-            
-            if output_path:
-                # 保存图像
-                vis.poll_events()
-                vis.update_renderer()
-                img = vis.capture_screen_float_buffer(True)
-                img = (np.asarray(img) * 255).astype(np.uint8)
-                o3d.io.write_image(str(output_path), o3d.geometry.Image(img))
-                print(f"Skeleton+mesh visualization saved: {output_path}")
-            else:
-                # 交互式显示
-                vis.run()
+
+            output_path = Path(output_path) / f"frame_{frame_idx:04d}.png"
+            # 保存图像
+            vis.poll_events()
+            vis.update_renderer()
+            img = vis.capture_screen_float_buffer(True)
+            img = (np.asarray(img) * 255).astype(np.uint8)
+            o3d.io.write_image(str(output_path), o3d.geometry.Image(img))
+            print(f"Skeleton+mesh visualization saved: {output_path}")
             
             vis.destroy_window()
             
@@ -1902,6 +1943,11 @@ class DualReferenceInterpolator(VolumetricInterpolator):
             'vertices': transformed_vertices
         }
         
+        skeleton_dir = Path(output_dir) / f"Skeletons"
+        skeleton_dir.mkdir(parents=True, exist_ok=True)
+        self.visualize_skeleton_with_mesh(frame_result, skeleton_dir, frame_idx)
+
+
         # 保存到文件
         if output_dir:
             try:
@@ -1917,6 +1963,7 @@ class DualReferenceInterpolator(VolumetricInterpolator):
                     else:
                         print(f"      Mesh file saved failed: {mesh_output_path}")
                 
+
                 # 保存额外数据
                 if save_npy_files:
                     transform_output_path = Path(output_dir) / f"interpolated_frame_{frame_idx:04d}_transforms.npy"

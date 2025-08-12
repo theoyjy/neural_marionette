@@ -368,11 +368,21 @@ def integrate_vertex_color_processing(interpolator, mesh_folder_path: str, evalu
                     frame_idx = frame_data.get('frame_idx', i)
                     t = frame_data.get('interpolation_t', i / len(interpolated_frames))
                     
-                    # For baseline method, just use the start frame's colors.
-                    # For other methods, interpolate between start and end.
+                    # Different color handling strategy based on method
                     if method == 'baseline':
+                        # Baseline method: use start frame colors
                         interpolated_colors = np.asarray(start_mesh.vertex_colors)
+                    elif method == 'dual_reference':
+                        # Dual reference method: use colors from the actual reference frame being used
+                        # Dual reference uses piecewise logic: t < 0.5 use start, t >= 0.5 use end
+                        if t < 0.5:
+                            interpolated_colors = np.asarray(start_mesh.vertex_colors)
+                            print(f"  - Dual reference: t={t:.3f} < 0.5, using start frame colors")
+                        else:
+                            interpolated_colors = np.asarray(end_mesh.vertex_colors)
+                            print(f"  - Dual reference: t={t:.3f} >= 0.5, using end frame colors")
                     else:
+                        # Other methods: interpolate between start and end frame colors
                         interpolated_colors = _interpolate_vertex_colors_from_references(
                             start_mesh, end_mesh, t
                         )

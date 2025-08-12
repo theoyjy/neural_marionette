@@ -9,3 +9,6 @@ output/
 /evaluation/dual_reference
 /evaluation/interpolation
 /evaluation/results
+data/demo/source/gHO_sBM_cAll_d20_mHO1_ch05.npy
+/data
+/docs
